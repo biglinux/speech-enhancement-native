@@ -1,0 +1,3 @@
+# Rust 1.98.1+: 1.98.0 miscompiles trait-object vtables (realfft Arc<dyn>).
+[toolchain]
+channel = "1.98.1"

@@ -1,0 +1,4 @@
+/target
+/deepfilternet3/*/fuzz/target
+*.wav
+__pycache__/

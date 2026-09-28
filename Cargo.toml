@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "ops",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Unwinding costs the GTCRN-AEC streaming path 37% on a Sandy Bridge i3.
+panic = "abort"

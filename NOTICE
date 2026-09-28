@@ -1,0 +1,45 @@
+speech-enhancement-native
+Copyright 2026 BigLinux <www.biglinux.com.br>
+
+The code in this repository is an independent implementation of the inference
+path of the models below. It is licensed MIT OR Apache-2.0, except the
+gtcrn-aec crates, which are Apache-2.0 (see each Cargo.toml). The model weights
+are derived from the upstream releases and keep their upstream licenses. This
+project is not affiliated with or endorsed by the upstream authors.
+
+1. DeepFilterNet3 and DeepFilterNet3-LL
+   Hendrik Schröter, Tobias Rosenkranz, Alberto N. Escalante-B., Andreas Maier.
+   https://github.com/Rikorose/DeepFilterNet
+   License: MIT OR Apache-2.0 (deepfilternet3/LICENSE-DeepFilterNet-MIT).
+   Files: deepfilternet3/dfn3-ladspa/dfn3_weights.bin,
+          deepfilternet3/dfn3ll-ladspa/dfn3ll_weights.bin
+   Changes: GRU projection matrices quantized to int8 with per-row scales
+   (deepfilternet3/scripts/quantize_int8.py); other tensors kept in f32 and
+   repacked into the layout the engines load.
+
+2. DPDFNet-2 48 kHz HR
+   Daniel Rika, Nino Sapir, Ido Gus (Ceva). https://github.com/ceva-ip/DPDFNet
+   License: Apache-2.0 (dpdfnet/model/LICENSE).
+   Source code commit 9bd9844a227bb6aa57e55588d8d0e961fcff1c46.
+   Checkpoint dpdfnet2_48khz_hr.pth from https://huggingface.co/Ceva-IP/DPDFNet,
+   revision dd6818d00f50c836fed43a6243ebe49116de5964,
+   sha256 f4eb984dc80d66d6e417a8d6ad8855b4fd0b559452db1e68950f028234109d5c.
+   Files: dpdfnet/model/dpdfnet2_48khz_hr-w8a16/
+   Changes: batch norm folded into the convolutions, GRU matrices quantized to
+   int8 with per-row scales and reordered to z,r,n gates
+   (dpdfnet/tools/export_model.py), then repacked losslessly
+   (dpdfnet/tools/pack_matrices.py).
+
+3. GTCRN-AEC (LocalVQE)
+   localai-org. https://github.com/localai-org/LocalVQE
+   License: Apache-2.0 (gtcrn-aec/model/LICENSE).
+   File: gtcrn-aec/model/localvqe-pi-aec-v1-49k-f32.gguf, unmodified, from
+   https://huggingface.co/LocalAI-io/LocalVQE,
+   sha256 b80b75b9038d0d28079a84afe7d4f0b8f6404f723af4633c05ed4f96fb30b7b8.
+   The gtcrn-aec crates port the LocalVQE inference code (ggml/gtcrn.cpp and
+   ggml/daf_frontend.cpp) to Rust.
+   Architecture: GTCRN, Xiaobin Rong et al., ICASSP 2024,
+   https://github.com/Xiaobin-Rong/gtcrn (MIT).
+
+Rust dependencies keep their own licenses; `cargo deny check licenses` lists
+them.

@@ -1,0 +1,19 @@
+[package]
+name = "dfn-ops"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Shared int8/SIMD numeric kernels for the DeepFilterNet LADSPA denoisers"
+
+[dependencies]
+libc = "0.2"
+
+[features]
+default = []
+r11-packed = []
+r11-quant = []
+r11-matvec = []
+r11-exp-bits = []
+r11-zr-schedule = []
+force-sse41 = []
+force-avx1 = []
