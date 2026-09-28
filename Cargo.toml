@@ -7,6 +7,8 @@ members = [
     "limiter-ladspa",
     "dpdfnet",
     "dpdfnet/ops",
+    "gtcrn-aec/aec-gtcrn",
+    "gtcrn-aec/spa-aec-gtcrn",
 ]
 exclude = ["deepfilternet3/dfn3-ladspa/fuzz", "deepfilternet3/dfn3ll-ladspa/fuzz"]
 resolver = "2"

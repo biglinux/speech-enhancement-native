@@ -1,0 +1,14 @@
+[package]
+name = "spa-aec-gtcrn"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "PipeWire SPA AEC plugin (spa_audio_aec) backed by the native Rust GTCRN-AEC"
+publish = false
+
+[lib]
+name = "spa_aec_gtcrn"
+crate-type = ["cdylib"]
+
+[dependencies]
+aec-gtcrn = { path = "../aec-gtcrn" }
