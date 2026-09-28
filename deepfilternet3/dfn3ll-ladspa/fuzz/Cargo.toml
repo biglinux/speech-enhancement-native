@@ -1,0 +1,28 @@
+# Standalone crate (excluded from the parent workspace): cargo-fuzz needs a
+# nightly toolchain, while the plugin gate is pinned to stable 1.98.1.
+[package]
+name = "dfn3ll-ladspa-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.dfn3ll-ladspa]
+path = ".."
+
+[[bin]]
+name = "process"
+path = "fuzz_targets/process.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+[workspace]

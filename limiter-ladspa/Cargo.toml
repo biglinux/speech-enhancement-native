@@ -1,0 +1,10 @@
+[package]
+name = "limiter-ladspa"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Mono lookahead brickwall limiter (LADSPA) — transparent peak ceiling for the mic/output chain"
+publish = false # cdylib LADSPA plugin, built to .so; never published to crates.io
+
+[lib]
+crate-type = ["cdylib", "rlib"]

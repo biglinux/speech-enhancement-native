@@ -1,0 +1,12 @@
+[package]
+name = "dfn-tools"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Dev CLIs/benches for both engines. Kept in a separate crate so the cdylib+rlib
+# engine crates don't collide with bin output names (cargo#6313).
+[dependencies]
+dfn3ll-ladspa = { path = "../dfn3ll-ladspa" }
+dfn3-ladspa = { path = "../dfn3-ladspa" }

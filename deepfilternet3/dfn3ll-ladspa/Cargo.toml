@@ -1,0 +1,28 @@
+[package]
+name = "dfn3ll-ladspa"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Independent Rust reimplementation of DeepFilterNet3-LL (low-latency) streaming inference (LADSPA mono denoiser)"
+publish = false # cdylib LADSPA plugin, built to .so; never published to crates.io
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+realfft = "3"
+dfn-ops = { path = "../../ops" }
+
+[features]
+default = ["r11-core"]
+r11-packed = ["dfn-ops/r11-packed", "r11-align64"]
+r11-quant = ["dfn-ops/r11-quant"]
+r11-matvec = ["dfn-ops/r11-matvec"]
+r11-align64 = []
+r11-exp-bits = ["dfn-ops/r11-exp-bits"]
+r11-zr-schedule = ["dfn-ops/r11-zr-schedule"]
+r11-core = ["r11-packed", "r11-quant", "r11-matvec", "r11-align64"]
+# Probe instrumentation is not part of production. Same hooks in the frozen control.
+r11-probe = []
+force-sse41 = ["dfn-ops/force-sse41"]
+force-avx1 = ["dfn-ops/force-avx1"]
