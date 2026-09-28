@@ -1,0 +1,7 @@
+# OFFLINE preparation/reference/test environment only. Never runtime plugin dependencies.
+# Install the CPU-only torch wheel from the official PyTorch CPU index first.
+# Record `pip freeze` with the actual validated versions in the final report.
+numpy>=1.26
+scipy>=1.11
+einops>=0.7
+pytest>=8

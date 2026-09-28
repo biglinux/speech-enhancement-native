@@ -1,0 +1,68 @@
+[package]
+name = "dpdfnet-native"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native Rust DPDFNet-2 48 kHz HR engine (W8A16) and LADSPA plugin"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+dfn-ops = { package = "dpdfnet-ops", path = "ops" }
+realfft = "3.5"
+serde_json = "1"
+sha2 = "0.10"
+
+[features]
+# The oldcpu-* kernels are bit-identical and inactive on AVX2 (tier 3); on the
+# real i3 (Sandy Bridge, AVX1 no AVX2/FMA) the combined set cut RTF 0.59 -> 0.49
+# (-16.5%) and the worst-case 960 callback from ~16 ms to ~13.6 ms.
+default = ["packed-gru", "specialized-conv", "dprnn-exact", "oldcpu-int-tiles", "oldcpu-vex128", "oldcpu-exp-bits", "oldcpu-df5-avx", "r8-packed-tiles", "r8-matvec-wide", "r8-sse-prebroadcast", "r9-recurrent-cache", "r9-affine-epilogue", "r10-resolved-weights", "r10-quant-pack"]
+packed-gru = []
+specialized-conv = []
+dprnn-exact = []
+# Diagnostic ceiling; no AVX execution in model/ops dispatch.
+force-sse41 = ["dfn-ops/force-sse41"]
+# Diagnostic scalar math. Build separately, never enable in production by accident.
+scalar-reference = []
+
+# Earlier round-6/7 options. The four exact kernels are adopted in defaults above.
+oldcpu-int-tiles = ["packed-gru"]
+oldcpu-vex128 = ["packed-gru"]
+oldcpu-exp-bits = ["dfn-ops/oldcpu-exp-bits"]
+oldcpu-df5-avx = ["specialized-conv"]
+# Different approximation, NOT bit-exact: retain real division; no NR/reciprocal.
+oldcpu-rational-gates = ["dfn-ops/oldcpu-rational-gates"]
+# Diagnostic ceiling for PROJECT kernels only. RustFFT still detects the real CPU.
+force-avx1 = ["dfn-ops/force-avx1"]
+
+# Round 8: packed/matvec/prebroadcast are adopted defaults; F/B and amax stay opt-in.
+r8-packed-tiles = ["packed-gru"]
+r8-fb-pair = ["packed-gru", "dprnn-exact"]
+r8-sse-prebroadcast = ["packed-gru", "oldcpu-int-tiles"]
+r8-matvec-wide = ["dfn-ops/r8-matvec-wide"]
+r8-amax = ["dfn-ops/r8-amax"]
+# Convenience experiment, NOT a recommended/default production selection.
+r8-exact = ["r8-packed-tiles", "r8-fb-pair", "r8-sse-prebroadcast", "r8-matvec-wide", "r8-amax"]
+
+# Round 9: opt-in AVX2-focused candidates; the adopted R3/R7/R8 defaults are unchanged.
+r9-packed-k4 = ["packed-gru"]
+r9-recurrent-cache = ["packed-gru"]
+r9-grouped-fusion = ["dfn-ops/r9-grouped-fusion"]
+r9-first-unroll = ["specialized-conv"]
+r9-affine-epilogue = ["specialized-conv"]
+# Cache is intentionally separate: it trades up to 192 KiB (depth 2) for work.
+r9-core = ["r9-packed-k4", "r9-grouped-fusion", "r9-first-unroll", "r9-affine-epilogue"]
+
+# Round 10: independent exact experiments; adopted defaults above stay unchanged.
+r10-resolved-weights = []
+r10-batch-cache = ["packed-gru"]
+r10-avx2-prebroadcast = ["packed-gru"]
+r10-quant-pack = ["dfn-ops/r10-quant-pack"]
+r10-linear-plan = ["dfn-ops/r10-linear-plan"]
+# Diagnostic counters only; never qualify this build's performance.
+r10-weight-audit = []
+# Memory-light combination; +384 KiB/depth2 batch cache is explicitly separate.
+r10-core = ["r10-resolved-weights", "r10-avx2-prebroadcast", "r10-quant-pack", "r10-linear-plan"]

@@ -5,6 +5,8 @@ members = [
     "deepfilternet3/dfn3ll-ladspa",
     "deepfilternet3/tools",
     "limiter-ladspa",
+    "dpdfnet",
+    "dpdfnet/ops",
 ]
 exclude = ["deepfilternet3/dfn3-ladspa/fuzz", "deepfilternet3/dfn3ll-ladspa/fuzz"]
 resolver = "2"
@@ -15,3 +17,10 @@ lto = "fat"
 codegen-units = 1
 # Unwinding costs the GTCRN-AEC streaming path 37% on a Sandy Bridge i3.
 panic = "abort"
+
+# DPDFNet catches initialization panics at the C ABI and reports a failed
+# instantiate instead of taking the host down, which needs unwinding.
+# Build it with `--profile release-unwind -p dpdfnet-native`.
+[profile.release-unwind]
+inherits = "release"
+panic = "unwind"

@@ -1,0 +1,216 @@
+{
+  "operation": "pack",
+  "lossless": true,
+  "source_weights_sha256": "c396c431962fdf775472056e5d0a2c106b12b91aabb30797756e01cbc850b9fe",
+  "target_weights_sha256": "a284b168a37f146595905290ad44cae47147662edbfa3ef74943fc607133c627",
+  "weight_bytes": 3601856,
+  "changed_matrices": [
+    {
+      "path": "root.encoder.erb_dual.blocks[0].forward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[0].forward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[0].backward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[0].backward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[0].temporal.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[0].temporal.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].forward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].forward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].backward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].backward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].temporal.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.erb_dual.blocks[1].temporal.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].forward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].forward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].backward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].backward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].temporal.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[0].temporal.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].forward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].forward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].backward.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].backward.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].temporal.input",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.df_dual.blocks[1].temporal.recurrent",
+      "rows": 192,
+      "cols": 64,
+      "bytes": 12288
+    },
+    {
+      "path": "root.encoder.gru.grus[0].input",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.encoder.gru.grus[0].recurrent",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.mask_decoder.gru.grus[0].input",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.mask_decoder.gru.grus[0].recurrent",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.mask_decoder.gru.grus[1].input",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.mask_decoder.gru.grus[1].recurrent",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.df_decoder.gru.grus[0].input",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.df_decoder.gru.grus[0].recurrent",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.df_decoder.gru.grus[1].input",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    },
+    {
+      "path": "root.df_decoder.gru.grus[1].recurrent",
+      "rows": 768,
+      "cols": 256,
+      "bytes": 196608
+    }
+  ],
+  "changed_weight_bytes": 2260992,
+  "note": "No weights/scales requantized; no audio quality or CPU result implied.",
+  "source_manifest_sha256": "4d527e78ed9c124c9f279db66683846e0d5d5f6cd7e833060d1f16383063ff50"
+}

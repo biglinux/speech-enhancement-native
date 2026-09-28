@@ -1,0 +1,1947 @@
+{
+  "schema": 2,
+  "architecture": "dpdfnet-48hr-v1",
+  "depth": 2,
+  "sample_rate": 48000,
+  "fft": 960,
+  "hop": 480,
+  "df_bins": 96,
+  "mask_method": "before_df",
+  "lookahead": 2,
+  "wnorm": 0.0010416666666666667,
+  "window": {
+    "offset": 3595648,
+    "len": 960,
+    "dtype": "f32"
+  },
+  "norm": {
+    "alpha": 0.98,
+    "one_minus_alpha": 0.020000000000000018,
+    "eps": 1e-12,
+    "std": 40.0,
+    "mu0": {
+      "offset": 3599488,
+      "len": 481,
+      "dtype": "f32"
+    },
+    "s0": {
+      "offset": 3601472,
+      "len": 96,
+      "dtype": "f32"
+    }
+  },
+  "encoder": {
+    "erb0": {
+      "in_t": 3,
+      "in_f": 480,
+      "in_c": 1,
+      "out_f": 480,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 1,
+          "co": 64,
+          "kt": 3,
+          "kf": 3,
+          "stride": 1,
+          "pad": 1,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 0,
+            "len": 576,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2304,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "erb1": {
+      "in_t": 1,
+      "in_f": 480,
+      "in_c": 64,
+      "out_f": 160,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 3,
+          "stride": 3,
+          "pad": 1,
+          "groups": 64,
+          "activation": "none",
+          "weight": {
+            "offset": 2560,
+            "len": 192,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 3328,
+            "len": 64,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 3584,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 19968,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "erb2": {
+      "in_t": 1,
+      "in_f": 160,
+      "in_c": 64,
+      "out_f": 80,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 3,
+          "stride": 2,
+          "pad": 1,
+          "groups": 64,
+          "activation": "none",
+          "weight": {
+            "offset": 20224,
+            "len": 192,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 20992,
+            "len": 64,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 21248,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 37632,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "erb3": {
+      "in_t": 1,
+      "in_f": 80,
+      "in_c": 64,
+      "out_f": 40,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 3,
+          "stride": 2,
+          "pad": 1,
+          "groups": 64,
+          "activation": "none",
+          "weight": {
+            "offset": 37888,
+            "len": 192,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 38656,
+            "len": 64,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 38912,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 55296,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "df0": {
+      "in_t": 3,
+      "in_f": 96,
+      "in_c": 2,
+      "out_f": 96,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 2,
+          "co": 64,
+          "kt": 3,
+          "kf": 3,
+          "stride": 1,
+          "pad": 1,
+          "groups": 2,
+          "activation": "none",
+          "weight": {
+            "offset": 55552,
+            "len": 576,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 57856,
+            "len": 64,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 58112,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 74496,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "df1": {
+      "in_t": 1,
+      "in_f": 96,
+      "in_c": 64,
+      "out_f": 48,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 3,
+          "stride": 2,
+          "pad": 1,
+          "groups": 64,
+          "activation": "none",
+          "weight": {
+            "offset": 74752,
+            "len": 192,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 75520,
+            "len": 64,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 75776,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 92160,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "erb_dual": {
+      "frequencies": 40,
+      "channels": 64,
+      "blocks": [
+        {
+          "forward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 92416,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 104704,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 105472,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 117760,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 118528,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "backward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 120064,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 132352,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 133120,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 145408,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 146176,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "temporal": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 147712,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 160000,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 160768,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 173056,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 173824,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "fc_intra": {
+            "input": 128,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 175360,
+              "len": 8192,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 208128,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "fc_inter": {
+            "input": 64,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 208384,
+              "len": 4096,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 224768,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_intra": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 225024,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 225280,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_inter": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 225536,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 225792,
+              "len": 64,
+              "dtype": "f32"
+            }
+          }
+        },
+        {
+          "forward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 226048,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 238336,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 239104,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 251392,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 252160,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "backward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 253696,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 265984,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 266752,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 279040,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 279808,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "temporal": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 281344,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 293632,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 294400,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 306688,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 307456,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "fc_intra": {
+            "input": 128,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 308992,
+              "len": 8192,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 341760,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "fc_inter": {
+            "input": 64,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 342016,
+              "len": 4096,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 358400,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_intra": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 358656,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 358912,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_inter": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 359168,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 359424,
+              "len": 64,
+              "dtype": "f32"
+            }
+          }
+        }
+      ]
+    },
+    "df_dual": {
+      "frequencies": 48,
+      "channels": 64,
+      "blocks": [
+        {
+          "forward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 359680,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 371968,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 372736,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 385024,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 385792,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "backward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 387328,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 399616,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 400384,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 412672,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 413440,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "temporal": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 414976,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 427264,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 428032,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 440320,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 441088,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "fc_intra": {
+            "input": 128,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 442624,
+              "len": 8192,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 475392,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "fc_inter": {
+            "input": 64,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 475648,
+              "len": 4096,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 492032,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_intra": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 492288,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 492544,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_inter": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 492800,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 493056,
+              "len": 64,
+              "dtype": "f32"
+            }
+          }
+        },
+        {
+          "forward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 493312,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 505600,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 506368,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 518656,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 519424,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "backward": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 520960,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 533248,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 534016,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 546304,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 547072,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "temporal": {
+            "hidden": 64,
+            "gate_order": "zrn",
+            "reset": "after",
+            "input": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 548608,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 560896,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "recurrent": {
+              "kind": "w8a16",
+              "rows": 192,
+              "cols": 64,
+              "weight": {
+                "offset": 561664,
+                "len": 12288,
+                "dtype": "i8"
+              },
+              "scales": {
+                "offset": 573952,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "layout": "pair-output8-v1"
+            },
+            "bias": {
+              "offset": 574720,
+              "len": 384,
+              "dtype": "f32"
+            }
+          },
+          "fc_intra": {
+            "input": 128,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 576256,
+              "len": 8192,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 609024,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "fc_inter": {
+            "input": 64,
+            "output": 64,
+            "groups": 1,
+            "activation": "none",
+            "weight": {
+              "offset": 609280,
+              "len": 4096,
+              "dtype": "f32"
+            },
+            "bias": {
+              "offset": 625664,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_intra": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 625920,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 626176,
+              "len": 64,
+              "dtype": "f32"
+            }
+          },
+          "ln_inter": {
+            "eps": 1e-05,
+            "gamma": {
+              "offset": 626432,
+              "len": 64,
+              "dtype": "f32"
+            },
+            "beta": {
+              "offset": 626688,
+              "len": 64,
+              "dtype": "f32"
+            }
+          }
+        }
+      ]
+    },
+    "erb_fc": {
+      "input": 2560,
+      "output": 512,
+      "groups": 32,
+      "activation": "relu",
+      "weight": {
+        "offset": 626944,
+        "len": 40960,
+        "dtype": "f32"
+      },
+      "bias": {
+        "offset": 790784,
+        "len": 512,
+        "dtype": "f32"
+      }
+    },
+    "df_fc": {
+      "input": 3072,
+      "output": 512,
+      "groups": 32,
+      "activation": "relu",
+      "weight": {
+        "offset": 792832,
+        "len": 49152,
+        "dtype": "f32"
+      },
+      "bias": {
+        "offset": 989440,
+        "len": 512,
+        "dtype": "f32"
+      }
+    },
+    "gru": {
+      "linear_in": {
+        "input": 1024,
+        "output": 256,
+        "groups": 16,
+        "activation": "relu",
+        "weight": {
+          "offset": 1396992,
+          "len": 16384,
+          "dtype": "f32"
+        },
+        "bias": {
+          "offset": 1462528,
+          "len": 256,
+          "dtype": "f32"
+        }
+      },
+      "grus": [
+        {
+          "hidden": 256,
+          "gate_order": "zrn",
+          "reset": "after",
+          "input": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 991488,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 1188096,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "recurrent": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 1191168,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 1387776,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "bias": {
+            "offset": 1390848,
+            "len": 1536,
+            "dtype": "f32"
+          }
+        }
+      ],
+      "linear_out": {
+        "input": 256,
+        "output": 512,
+        "groups": 16,
+        "activation": "relu",
+        "weight": {
+          "offset": 1463552,
+          "len": 8192,
+          "dtype": "f32"
+        },
+        "bias": {
+          "offset": 1496320,
+          "len": 512,
+          "dtype": "f32"
+        }
+      }
+    }
+  },
+  "mask_decoder": {
+    "gru": {
+      "linear_in": {
+        "input": 512,
+        "output": 256,
+        "groups": 16,
+        "activation": "relu",
+        "weight": {
+          "offset": 2309376,
+          "len": 8192,
+          "dtype": "f32"
+        },
+        "bias": {
+          "offset": 2342144,
+          "len": 256,
+          "dtype": "f32"
+        }
+      },
+      "grus": [
+        {
+          "hidden": 256,
+          "gate_order": "zrn",
+          "reset": "after",
+          "input": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 1498368,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 1694976,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "recurrent": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 1698048,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 1894656,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "bias": {
+            "offset": 1897728,
+            "len": 1536,
+            "dtype": "f32"
+          }
+        },
+        {
+          "hidden": 256,
+          "gate_order": "zrn",
+          "reset": "after",
+          "input": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 1903872,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 2100480,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "recurrent": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 2103552,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 2300160,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "bias": {
+            "offset": 2303232,
+            "len": 1536,
+            "dtype": "f32"
+          }
+        }
+      ],
+      "linear_out": {
+        "input": 256,
+        "output": 512,
+        "groups": 16,
+        "activation": "relu",
+        "weight": {
+          "offset": 2343168,
+          "len": 8192,
+          "dtype": "f32"
+        },
+        "bias": {
+          "offset": 2375936,
+          "len": 512,
+          "dtype": "f32"
+        }
+      }
+    },
+    "fc": {
+      "input": 512,
+      "output": 2560,
+      "groups": 32,
+      "activation": "relu",
+      "weight": {
+        "offset": 2377984,
+        "len": 40960,
+        "dtype": "f32"
+      },
+      "bias": {
+        "offset": 2541824,
+        "len": 2560,
+        "dtype": "f32"
+      }
+    },
+    "skip3": {
+      "in_t": 1,
+      "in_f": 40,
+      "in_c": 64,
+      "out_f": 40,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 64,
+          "activation": "relu",
+          "weight": {
+            "offset": 2552064,
+            "len": 64,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2552320,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "up3": {
+      "in_t": 1,
+      "in_f": 40,
+      "in_c": 64,
+      "out_f": 80,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "subpixel",
+          "branches": [
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2552576,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2553344,
+                "len": 64,
+                "dtype": "f32"
+              }
+            },
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2553600,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2554368,
+                "len": 64,
+                "dtype": "f32"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 2554624,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2571008,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "skip2": {
+      "in_t": 1,
+      "in_f": 80,
+      "in_c": 64,
+      "out_f": 80,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 64,
+          "activation": "relu",
+          "weight": {
+            "offset": 2571264,
+            "len": 64,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2571520,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "up2": {
+      "in_t": 1,
+      "in_f": 80,
+      "in_c": 64,
+      "out_f": 160,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "subpixel",
+          "branches": [
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2571776,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2572544,
+                "len": 64,
+                "dtype": "f32"
+              }
+            },
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2572800,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2573568,
+                "len": 64,
+                "dtype": "f32"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 2573824,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2590208,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "skip1": {
+      "in_t": 1,
+      "in_f": 160,
+      "in_c": 64,
+      "out_f": 160,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 64,
+          "activation": "relu",
+          "weight": {
+            "offset": 2590464,
+            "len": 64,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2590720,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "up1": {
+      "in_t": 1,
+      "in_f": 160,
+      "in_c": 64,
+      "out_f": 480,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "subpixel",
+          "branches": [
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2590976,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2591744,
+                "len": 64,
+                "dtype": "f32"
+              }
+            },
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2592000,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2592768,
+                "len": 64,
+                "dtype": "f32"
+              }
+            },
+            {
+              "kind": "conv",
+              "ci": 64,
+              "co": 64,
+              "kt": 1,
+              "kf": 3,
+              "stride": 1,
+              "pad": 1,
+              "groups": 64,
+              "activation": "none",
+              "weight": {
+                "offset": 2593024,
+                "len": 192,
+                "dtype": "f32"
+              },
+              "bias": {
+                "offset": 2593792,
+                "len": 64,
+                "dtype": "f32"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 2594048,
+            "len": 4096,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2610432,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "skip0": {
+      "in_t": 1,
+      "in_f": 480,
+      "in_c": 64,
+      "out_f": 480,
+      "out_c": 64,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 64,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 64,
+          "activation": "relu",
+          "weight": {
+            "offset": 2610688,
+            "len": 64,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2610944,
+            "len": 64,
+            "dtype": "f32"
+          }
+        }
+      ]
+    },
+    "out": {
+      "in_t": 1,
+      "in_f": 480,
+      "in_c": 64,
+      "out_f": 480,
+      "out_c": 1,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 1,
+          "kt": 1,
+          "kf": 3,
+          "stride": 1,
+          "pad": 1,
+          "groups": 1,
+          "activation": "sigmoid",
+          "weight": {
+            "offset": 2611200,
+            "len": 192,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 2611968,
+            "len": 1,
+            "dtype": "f32"
+          }
+        }
+      ]
+    }
+  },
+  "df_decoder": {
+    "gru": {
+      "linear_in": {
+        "input": 512,
+        "output": 256,
+        "groups": 8,
+        "activation": "relu",
+        "weight": {
+          "offset": 3423040,
+          "len": 16384,
+          "dtype": "f32"
+        },
+        "bias": {
+          "offset": 3488576,
+          "len": 256,
+          "dtype": "f32"
+        }
+      },
+      "grus": [
+        {
+          "hidden": 256,
+          "gate_order": "zrn",
+          "reset": "after",
+          "input": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 2612032,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 2808640,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "recurrent": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 2811712,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 3008320,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "bias": {
+            "offset": 3011392,
+            "len": 1536,
+            "dtype": "f32"
+          }
+        },
+        {
+          "hidden": 256,
+          "gate_order": "zrn",
+          "reset": "after",
+          "input": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 3017536,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 3214144,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "recurrent": {
+            "kind": "w8a16",
+            "rows": 768,
+            "cols": 256,
+            "weight": {
+              "offset": 3217216,
+              "len": 196608,
+              "dtype": "i8"
+            },
+            "scales": {
+              "offset": 3413824,
+              "len": 768,
+              "dtype": "f32"
+            },
+            "layout": "pair-output8-v1"
+          },
+          "bias": {
+            "offset": 3416896,
+            "len": 1536,
+            "dtype": "f32"
+          }
+        }
+      ],
+      "linear_out": null
+    },
+    "skip": {
+      "input": 512,
+      "output": 256,
+      "groups": 16,
+      "activation": "none",
+      "weight": {
+        "offset": 3489600,
+        "len": 8192,
+        "dtype": "f32"
+      },
+      "bias": {
+        "offset": 3522368,
+        "len": 256,
+        "dtype": "f32"
+      }
+    },
+    "out": {
+      "input": 256,
+      "output": 960,
+      "groups": 16,
+      "activation": "tanh",
+      "weight": {
+        "offset": 3523392,
+        "len": 15360,
+        "dtype": "f32"
+      },
+      "bias": {
+        "offset": 3584832,
+        "len": 960,
+        "dtype": "f32"
+      }
+    },
+    "path": {
+      "in_t": 5,
+      "in_f": 96,
+      "in_c": 64,
+      "out_f": 96,
+      "out_c": 10,
+      "ops": [
+        {
+          "kind": "conv",
+          "ci": 64,
+          "co": 10,
+          "kt": 5,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 2,
+          "activation": "none",
+          "weight": {
+            "offset": 3588672,
+            "len": 1600,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 3595072,
+            "len": 10,
+            "dtype": "f32"
+          }
+        },
+        {
+          "kind": "conv",
+          "ci": 10,
+          "co": 10,
+          "kt": 1,
+          "kf": 1,
+          "stride": 1,
+          "pad": 0,
+          "groups": 1,
+          "activation": "relu",
+          "weight": {
+            "offset": 3595136,
+            "len": 100,
+            "dtype": "f32"
+          },
+          "bias": {
+            "offset": 3595584,
+            "len": 10,
+            "dtype": "f32"
+          }
+        }
+      ]
+    }
+  },
+  "upstream_commit": "9bd9844a227bb6aa57e55588d8d0e961fcff1c46",
+  "quantization": "w8a16",
+  "float_grus": [],
+  "intentionally_pruned": [
+    "enc.lsnr_fc (unused by upstream output)"
+  ],
+  "optimizations": {
+    "batch_norm_folded": true,
+    "depthwise_pointwise_1x1_pairs": 0,
+    "native_layout": "time,frequency,channel"
+  },
+  "trace_names": [
+    "magnitude_features",
+    "complex_features",
+    "erb0",
+    "erb1",
+    "erb2",
+    "erb3",
+    "df0",
+    "df1",
+    "erb_dual",
+    "df_dual",
+    "embedding",
+    "mask",
+    "coefficients",
+    "spectrum"
+  ],
+  "weights_sha256": "a284b168a37f146595905290ad44cae47147662edbfa3ef74943fc607133c627",
+  "checkpoint_sha256": "f4eb984dc80d66d6e417a8d6ad8855b4fd0b559452db1e68950f028234109d5c",
+  "checkpoint_filename": "dpdfnet2_48khz_hr.pth",
+  "weight_bytes": 3601856
+}

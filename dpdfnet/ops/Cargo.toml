@@ -1,0 +1,24 @@
+[package]
+name = "dpdfnet-ops"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "int8/SIMD numeric kernels for the DPDFNet engine (diverged copy of dfn-ops)"
+
+[dependencies]
+libc = "0.2"
+
+[features]
+default = []
+force-sse41 = []
+force-avx1 = []
+oldcpu-exp-bits = []
+oldcpu-rational-gates = []
+
+r8-matvec-wide = []
+r8-amax = []
+
+r9-grouped-fusion = []
+
+r10-quant-pack = []
+r10-linear-plan = []
