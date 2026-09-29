@@ -73,13 +73,12 @@ static HINTS: [Hint; 5] = [
         upper: 1.0,
     },
 ];
-// This experimental ID must be checked/registered before distribution.
 static DESC: Descriptor = Descriptor {
     unique_id: 57941,
     label: b"dpdfnet_native_48hr\0".as_ptr().cast(),
     // Do NOT claim HARD_RT_CAPABLE until measured on the deployment target and allocator-tested.
     properties: 0,
-    name: b"DPDFNet native 48k HR (experimental)\0".as_ptr().cast(),
+    name: b"DPDFNet native 48k HR\0".as_ptr().cast(),
     maker: b"BigLinux\0".as_ptr().cast(),
     copyright: b"MIT OR Apache-2.0; DPDFNet weights Apache-2.0\0"
         .as_ptr()

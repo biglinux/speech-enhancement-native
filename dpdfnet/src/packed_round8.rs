@@ -182,9 +182,7 @@ pub(super) unsafe fn avx2_four(
             let wb = _mm256_cvtepi8_epi16(_mm_loadu_si128(
                 w.as_ptr().add((r + 8) * cols + j * 8).cast(),
             ));
-            let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(0 * cols + j).cast::<i32>(),
-            ));
+            let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(wa, x0));
             b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(wb, x0));
             let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(
@@ -207,11 +205,11 @@ pub(super) unsafe fn avx2_four(
         let sb = _mm256_loadu_ps(sw.as_ptr().add(r + 8));
         let sx0 = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r),
+            out.as_mut_ptr().add(r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a0), sa), sx0),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 8),
+            out.as_mut_ptr().add(r + 8),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b0), sb), sx0),
         );
         let sx1 = _mm256_set1_ps(sx[1]);
@@ -309,11 +307,11 @@ macro_rules! cached_four {
             let sh = _mm_loadu_ps(sw.as_ptr().add(r + 4));
             let xs = _mm_set1_ps(sx[0]);
             _mm_storeu_ps(
-                out.as_mut_ptr().add(0 * rows + r),
+                out.as_mut_ptr().add(r),
                 _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a0), sl), xs),
             );
             _mm_storeu_ps(
-                out.as_mut_ptr().add(0 * rows + r + 4),
+                out.as_mut_ptr().add(r + 4),
                 _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b0), sh), xs),
             );
             let xs = _mm_set1_ps(sx[1]);
@@ -408,9 +406,7 @@ pub(super) unsafe fn avx2_pair(
         for j in (0..cols).step_by(2) {
             let aw = _mm256_cvtepi8_epi16(_mm_loadu_si128(wa.as_ptr().add(at + j * 8).cast()));
             let bw = _mm256_cvtepi8_epi16(_mm_loadu_si128(wb.as_ptr().add(at + j * 8).cast()));
-            let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(0 * cols + j).cast::<i32>(),
-            ));
+            let xx = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(aw, xx));
             b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(bw, xx));
             let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
@@ -433,11 +429,11 @@ pub(super) unsafe fn avx2_pair(
         let bscale = _mm256_loadu_ps(sb.as_ptr().add(r));
         let xs = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            ya.as_mut_ptr().add(0 * rows + r),
+            ya.as_mut_ptr().add(r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a0), ascale), xs),
         );
         _mm256_storeu_ps(
-            yb.as_mut_ptr().add(0 * rows + r),
+            yb.as_mut_ptr().add(r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b0), bscale), xs),
         );
         let xs = _mm256_set1_ps(sx[1]);
@@ -497,9 +493,7 @@ pub(super) unsafe fn sse_pair(
         for j in (0..cols).step_by(2) {
             let aw = _mm_cvtepi8_epi16(_mm_loadl_epi64(wa.as_ptr().add(at + j * 8).cast()));
             let bw = _mm_cvtepi8_epi16(_mm_loadl_epi64(wb.as_ptr().add(at + j * 8).cast()));
-            let xx = _mm_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(0 * cols + j).cast::<i32>(),
-            ));
+            let xx = _mm_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
             a0 = _mm_add_epi32(a0, _mm_madd_epi16(aw, xx));
             b0 = _mm_add_epi32(b0, _mm_madd_epi16(bw, xx));
             let xx = _mm_set1_epi32(std::ptr::read_unaligned(
@@ -522,11 +516,11 @@ pub(super) unsafe fn sse_pair(
         let bscale = _mm_loadu_ps(sb.as_ptr().add(r));
         let xs = _mm_set1_ps(sx[0]);
         _mm_storeu_ps(
-            ya.as_mut_ptr().add(0 * rows + r),
+            ya.as_mut_ptr().add(r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a0), ascale), xs),
         );
         _mm_storeu_ps(
-            yb.as_mut_ptr().add(0 * rows + r),
+            yb.as_mut_ptr().add(r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b0), bscale), xs),
         );
         let xs = _mm_set1_ps(sx[1]);
@@ -586,9 +580,7 @@ pub(super) unsafe fn vex_pair(
         for j in (0..cols).step_by(2) {
             let aw = _mm_cvtepi8_epi16(_mm_loadl_epi64(wa.as_ptr().add(at + j * 8).cast()));
             let bw = _mm_cvtepi8_epi16(_mm_loadl_epi64(wb.as_ptr().add(at + j * 8).cast()));
-            let xx = _mm_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(0 * cols + j).cast::<i32>(),
-            ));
+            let xx = _mm_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
             a0 = _mm_add_epi32(a0, _mm_madd_epi16(aw, xx));
             b0 = _mm_add_epi32(b0, _mm_madd_epi16(bw, xx));
             let xx = _mm_set1_epi32(std::ptr::read_unaligned(
@@ -611,11 +603,11 @@ pub(super) unsafe fn vex_pair(
         let bscale = _mm_loadu_ps(sb.as_ptr().add(r));
         let xs = _mm_set1_ps(sx[0]);
         _mm_storeu_ps(
-            ya.as_mut_ptr().add(0 * rows + r),
+            ya.as_mut_ptr().add(r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a0), ascale), xs),
         );
         _mm_storeu_ps(
-            yb.as_mut_ptr().add(0 * rows + r),
+            yb.as_mut_ptr().add(r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b0), bscale), xs),
         );
         let xs = _mm_set1_ps(sx[1]);

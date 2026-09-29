@@ -120,7 +120,7 @@ unsafe fn run_one<const N: usize>(
         }
         let xscale = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 0),
+            out.as_mut_ptr().add(r + 0),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_0),
@@ -130,7 +130,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 8),
+            out.as_mut_ptr().add(r + 8),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_1),
@@ -140,7 +140,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 16),
+            out.as_mut_ptr().add(r + 16),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_2),
@@ -150,7 +150,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 24),
+            out.as_mut_ptr().add(r + 24),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_3),
@@ -160,7 +160,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 32),
+            out.as_mut_ptr().add(r + 32),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_4),
@@ -170,7 +170,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 40),
+            out.as_mut_ptr().add(r + 40),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_5),
@@ -180,7 +180,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 48),
+            out.as_mut_ptr().add(r + 48),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_6),
@@ -190,7 +190,7 @@ unsafe fn run_one<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 56),
+            out.as_mut_ptr().add(r + 56),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_7),
@@ -249,7 +249,7 @@ unsafe fn run_four<const N: usize>(
                     w.as_ptr().add((r + 8) * N + (j + 0) * 8).cast(),
                 ));
                 let x = _mm256_set1_epi32(std::ptr::read_unaligned(
-                    q.as_ptr().add(0 * N + j + 0).cast::<i32>(),
+                    q.as_ptr().add(j + 0).cast::<i32>(),
                 ));
                 a0_0 = _mm256_add_epi32(a0_0, _mm256_madd_epi16(w0, x));
                 a0_1 = _mm256_add_epi32(a0_1, _mm256_madd_epi16(w1, x));
@@ -277,7 +277,7 @@ unsafe fn run_four<const N: usize>(
                     w.as_ptr().add((r + 8) * N + (j + 2) * 8).cast(),
                 ));
                 let x = _mm256_set1_epi32(std::ptr::read_unaligned(
-                    q.as_ptr().add(0 * N + j + 2).cast::<i32>(),
+                    q.as_ptr().add(j + 2).cast::<i32>(),
                 ));
                 a0_0 = _mm256_add_epi32(a0_0, _mm256_madd_epi16(w0, x));
                 a0_1 = _mm256_add_epi32(a0_1, _mm256_madd_epi16(w1, x));
@@ -300,7 +300,7 @@ unsafe fn run_four<const N: usize>(
         }
         let xscale = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 0),
+            out.as_mut_ptr().add(r + 0),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_0),
@@ -310,7 +310,7 @@ unsafe fn run_four<const N: usize>(
             ),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(0 * rows + r + 8),
+            out.as_mut_ptr().add(r + 8),
             _mm256_mul_ps(
                 _mm256_mul_ps(
                     _mm256_cvtepi32_ps(a0_1),
