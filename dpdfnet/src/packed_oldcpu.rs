@@ -27,22 +27,22 @@ pub(super) unsafe fn vex_legacy<const B: usize>(
             while j + 4 <= cols {
                 let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
                 let w1 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add((j + 2) * 8 + half * 2).cast()));
-                for k in 0..B {
+                for (k, acc) in a.iter_mut().enumerate() {
                     let x = q.as_ptr().add(k * cols + j);
                     let x0 = _mm_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
                     let x1 = _mm_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
-                    a[k] = _mm_add_epi32(a[k], _mm_madd_epi16(w0, x0));
+                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
                     b[k] = _mm_add_epi32(b[k], _mm_madd_epi16(w1, x1));
                 }
                 j += 4;
             }
             if j < cols {
                 let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
-                for k in 0..B {
+                for (k, acc) in a.iter_mut().enumerate() {
                     let x0 = _mm_set1_epi32(std::ptr::read_unaligned(
                         q.as_ptr().add(k * cols + j).cast::<i32>(),
                     ));
-                    a[k] = _mm_add_epi32(a[k], _mm_madd_epi16(w0, x0));
+                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
                 }
             }
             let scales = _mm_loadu_ps(sw.as_ptr().add(r + half));

@@ -70,7 +70,7 @@ fn go() -> Result<(), String> {
     ARMED.store(true, Ordering::SeqCst);
     let all = Instant::now();
     let mut checksum = 0.0f64;
-    for (n, chunk) in samples.chunks_exact(HOP).enumerate() {
+    for (n, chunk) in samples.as_chunks::<HOP>().0.iter().enumerate() {
         let start = Instant::now();
         p.process(chunk, &mut out);
         times[n] = start.elapsed().as_secs_f64() * 1e6;

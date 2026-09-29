@@ -28,9 +28,7 @@ pub(super) unsafe fn avx2_one(
         let mut a7 = _mm256_setzero_si256();
         for j in (0..cols).step_by(2) {
             let xx = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
-            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 0) * cols + j * 8).cast(),
-            ));
+            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(w0, xx));
             let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
                 w.as_ptr().add((r + 8) * cols + j * 8).cast(),
@@ -63,12 +61,9 @@ pub(super) unsafe fn avx2_one(
         }
         let xs = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 0),
+            out.as_mut_ptr().add(r),
             _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a0),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 0)),
-                ),
+                _mm256_mul_ps(_mm256_cvtepi32_ps(a0), _mm256_loadu_ps(sw.as_ptr().add(r))),
                 xs,
             ),
         );
@@ -186,7 +181,7 @@ pub(super) unsafe fn avx2_four(
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(wa, x0));
             b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(wb, x0));
             let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(1 * cols + j).cast::<i32>(),
+                q.as_ptr().add(cols + j).cast::<i32>(),
             ));
             a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(wa, x1));
             b1 = _mm256_add_epi32(b1, _mm256_madd_epi16(wb, x1));
@@ -214,11 +209,11 @@ pub(super) unsafe fn avx2_four(
         );
         let sx1 = _mm256_set1_ps(sx[1]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(1 * rows + r),
+            out.as_mut_ptr().add(rows + r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a1), sa), sx1),
         );
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(1 * rows + r + 8),
+            out.as_mut_ptr().add(rows + r + 8),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b1), sb), sx1),
         );
         let sx2 = _mm256_set1_ps(sx[2]);
@@ -245,11 +240,11 @@ pub(super) unsafe fn avx2_four(
         let mut a = [_mm256_setzero_si256(); 4];
         for j in (0..cols).step_by(2) {
             let ww = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
-            for k in 0..4 {
+            for (k, acc) in a.iter_mut().enumerate() {
                 let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
                     q.as_ptr().add(k * cols + j).cast::<i32>(),
                 ));
-                a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(ww, xx));
+                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(ww, xx));
             }
         }
         let ss = _mm256_loadu_ps(sw.as_ptr().add(r));
@@ -316,11 +311,11 @@ macro_rules! cached_four {
             );
             let xs = _mm_set1_ps(sx[1]);
             _mm_storeu_ps(
-                out.as_mut_ptr().add(1 * rows + r),
+                out.as_mut_ptr().add(rows + r),
                 _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a1), sl), xs),
             );
             _mm_storeu_ps(
-                out.as_mut_ptr().add(1 * rows + r + 4),
+                out.as_mut_ptr().add(rows + r + 4),
                 _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b1), sh), xs),
             );
             let xs = _mm_set1_ps(sx[2]);
@@ -381,6 +376,7 @@ pub(super) unsafe fn vex_cached_four(
 
 #[cfg(any(feature = "r8-fb-pair", test))]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)] // both directions of one step
 pub(super) unsafe fn avx2_pair(
     ya: &mut [f32],
     yb: &mut [f32],
@@ -410,7 +406,7 @@ pub(super) unsafe fn avx2_pair(
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(aw, xx));
             b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(bw, xx));
             let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(1 * cols + j).cast::<i32>(),
+                q.as_ptr().add(cols + j).cast::<i32>(),
             ));
             a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(aw, xx));
             b1 = _mm256_add_epi32(b1, _mm256_madd_epi16(bw, xx));
@@ -438,11 +434,11 @@ pub(super) unsafe fn avx2_pair(
         );
         let xs = _mm256_set1_ps(sx[1]);
         _mm256_storeu_ps(
-            ya.as_mut_ptr().add(1 * rows + r),
+            ya.as_mut_ptr().add(rows + r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a1), ascale), xs),
         );
         _mm256_storeu_ps(
-            yb.as_mut_ptr().add(1 * rows + r),
+            yb.as_mut_ptr().add(rows + r),
             _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b1), bscale), xs),
         );
         let xs = _mm256_set1_ps(sx[2]);
@@ -468,6 +464,7 @@ pub(super) unsafe fn avx2_pair(
 
 #[cfg(any(feature = "r8-fb-pair", test))]
 #[target_feature(enable = "sse4.1")]
+#[allow(clippy::too_many_arguments)] // both directions of one step
 pub(super) unsafe fn sse_pair(
     ya: &mut [f32],
     yb: &mut [f32],
@@ -497,7 +494,7 @@ pub(super) unsafe fn sse_pair(
             a0 = _mm_add_epi32(a0, _mm_madd_epi16(aw, xx));
             b0 = _mm_add_epi32(b0, _mm_madd_epi16(bw, xx));
             let xx = _mm_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(1 * cols + j).cast::<i32>(),
+                q.as_ptr().add(cols + j).cast::<i32>(),
             ));
             a1 = _mm_add_epi32(a1, _mm_madd_epi16(aw, xx));
             b1 = _mm_add_epi32(b1, _mm_madd_epi16(bw, xx));
@@ -525,11 +522,11 @@ pub(super) unsafe fn sse_pair(
         );
         let xs = _mm_set1_ps(sx[1]);
         _mm_storeu_ps(
-            ya.as_mut_ptr().add(1 * rows + r),
+            ya.as_mut_ptr().add(rows + r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a1), ascale), xs),
         );
         _mm_storeu_ps(
-            yb.as_mut_ptr().add(1 * rows + r),
+            yb.as_mut_ptr().add(rows + r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b1), bscale), xs),
         );
         let xs = _mm_set1_ps(sx[2]);
@@ -555,6 +552,7 @@ pub(super) unsafe fn sse_pair(
 
 #[cfg(any(feature = "r8-fb-pair", test))]
 #[target_feature(enable = "avx,sse4.1")]
+#[allow(clippy::too_many_arguments)] // both directions of one step
 pub(super) unsafe fn vex_pair(
     ya: &mut [f32],
     yb: &mut [f32],
@@ -584,7 +582,7 @@ pub(super) unsafe fn vex_pair(
             a0 = _mm_add_epi32(a0, _mm_madd_epi16(aw, xx));
             b0 = _mm_add_epi32(b0, _mm_madd_epi16(bw, xx));
             let xx = _mm_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(1 * cols + j).cast::<i32>(),
+                q.as_ptr().add(cols + j).cast::<i32>(),
             ));
             a1 = _mm_add_epi32(a1, _mm_madd_epi16(aw, xx));
             b1 = _mm_add_epi32(b1, _mm_madd_epi16(bw, xx));
@@ -612,11 +610,11 @@ pub(super) unsafe fn vex_pair(
         );
         let xs = _mm_set1_ps(sx[1]);
         _mm_storeu_ps(
-            ya.as_mut_ptr().add(1 * rows + r),
+            ya.as_mut_ptr().add(rows + r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(a1), ascale), xs),
         );
         _mm_storeu_ps(
-            yb.as_mut_ptr().add(1 * rows + r),
+            yb.as_mut_ptr().add(rows + r),
             _mm_mul_ps(_mm_mul_ps(_mm_cvtepi32_ps(b1), bscale), xs),
         );
         let xs = _mm_set1_ps(sx[2]);

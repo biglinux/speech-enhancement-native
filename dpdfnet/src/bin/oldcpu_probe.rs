@@ -237,8 +237,10 @@ fn raw(path: &str, n: usize) -> Result<Vec<f32>, String> {
         return Err("invalid raw f32 input size".into());
     }
     let samples: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
     if samples.iter().any(|x| !x.is_finite()) {
         return Err("non-finite raw input".into());
@@ -392,8 +394,8 @@ fn capture(bundle: &str, dir: &Path, frames: usize) -> Result<Value, String> {
         s[1] = 0.0;
         s[BINS * 2 - 1] = 0.0;
         p.model.process_spectrum(&s, 0.0);
-        for i in 0..names.len() {
-            buffers[i].extend_from_slice(p.model.trace(i).ok_or("missing trace")?);
+        for (i, buffer) in buffers.iter_mut().enumerate().take(names.len()) {
+            buffer.extend_from_slice(p.model.trace(i).ok_or("missing trace")?);
         }
     }
     let mut files = Vec::new();
@@ -604,8 +606,10 @@ fn read_f32_limited(path: &Path, bytes: usize) -> Result<Vec<f32>, String> {
     }
     let data = fs::read(path).map_err(|e| e.to_string())?;
     let x: Vec<f32> = data
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect();
     if x.iter().any(|v| !v.is_finite()) {
         return Err("non-finite oracle data".into());
@@ -780,8 +784,8 @@ fn render(bundle: &str, input: &Path, dir: &Path, db: f32) -> Result<Value, Stri
             inp.read_exact(&mut raw[..bytes])
                 .map_err(|e| e.to_string())?;
             input_hash.update(&raw[..bytes]);
-            for (x, b) in pcm.iter_mut().zip(raw[..bytes].chunks_exact(4)) {
-                *x = f32::from_le_bytes(b.try_into().unwrap());
+            for (x, b) in pcm.iter_mut().zip(raw[..bytes].as_chunks::<4>().0) {
+                *x = f32::from_le_bytes(*b);
                 if !x.is_finite() {
                     return Err("non-finite render input".into());
                 }
@@ -792,12 +796,15 @@ fn render(bundle: &str, input: &Path, dir: &Path, db: f32) -> Result<Value, Stri
             if p.faulted() || p.sanitized_samples != 0 {
                 return Err("native render fault".into());
             }
-            for (x, b) in output[..count].iter().zip(raw[..bytes].chunks_exact_mut(4)) {
+            for (x, b) in output[..count]
+                .iter()
+                .zip(raw[..bytes].as_chunks_mut::<4>().0.iter_mut())
+            {
                 if !x.is_finite() {
                     return Err("non-finite render output".into());
                 }
                 peak = peak.max(x.abs());
-                b.copy_from_slice(&x.to_le_bytes());
+                *b = x.to_le_bytes();
             }
             writer.write_all(&raw[..bytes]).map_err(|e| e.to_string())?;
             output_hash.update(&raw[..bytes]);

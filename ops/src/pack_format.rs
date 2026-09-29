@@ -106,8 +106,8 @@ pub fn sections(b: &[u8], g: Geometry) -> Result<Sections, String> {
 pub fn pack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, String> {
     if rows == 0
         || cols == 0
-        || rows % 8 != 0
-        || cols % 2 != 0
+        || !rows.is_multiple_of(8)
+        || !cols.is_multiple_of(2)
         || rows.checked_mul(cols) != Some(src.len())
     {
         return Err("invalid pack geometry".into());
@@ -123,8 +123,8 @@ pub fn pack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, Stri
 pub fn unpack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, String> {
     if rows == 0
         || cols == 0
-        || rows % 8 != 0
-        || cols % 2 != 0
+        || !rows.is_multiple_of(8)
+        || !cols.is_multiple_of(2)
         || rows.checked_mul(cols) != Some(src.len())
     {
         return Err("invalid unpack geometry".into());

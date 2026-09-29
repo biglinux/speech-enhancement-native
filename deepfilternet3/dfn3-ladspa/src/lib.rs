@@ -1136,6 +1136,52 @@ fn post_filter(nr: &[f32], ni: &[f32], er: &mut [f32], ei: &mut [f32], beta: f32
     }
 }
 
+/// AVX body of the `df_convp` depthwise taps for one output channel: `dst` (96
+/// floats, 12 registers) stays in registers across all `cpg_in * 5` taps instead
+/// of being loaded and stored per tap as the SSE2 loop does. Each lane adds
+/// `src * w` in the same (ci, k) order with a separate multiply and add, so the
+/// sum is bit-identical to the scalar loop.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn convp_taps_avx(
+    dst: &mut [f32],
+    convp_pad: &[f32],
+    c0: &[f32],
+    taps: &[f32],
+    ci_base: usize,
+    cpg_in: usize,
+    head: usize,
+) {
+    use std::arch::x86_64::*;
+    const LANES: usize = NB_DF / 8;
+    assert!(dst.len() == NB_DF && taps.len() == cpg_in * 5);
+    let mut acc = [_mm256_setzero_ps(); LANES];
+    for (l, a) in acc.iter_mut().enumerate() {
+        *a = _mm256_loadu_ps(dst.as_ptr().add(l * 8));
+    }
+    for ci in 0..cpg_in {
+        let ci_abs = ci_base + ci;
+        for k in 0..5 {
+            let src: &[f32] = if k < 4 {
+                let at = ci_abs * 4 * NB_DF + ((head + k) & 3) * NB_DF;
+                &convp_pad[at..at + NB_DF]
+            } else {
+                &c0[ci_abs * NB_DF..ci_abs * NB_DF + NB_DF]
+            };
+            let w = _mm256_set1_ps(taps[ci * 5 + k]);
+            for (l, a) in acc.iter_mut().enumerate() {
+                *a = _mm256_add_ps(
+                    *a,
+                    _mm256_mul_ps(_mm256_loadu_ps(src.as_ptr().add(l * 8)), w),
+                );
+            }
+        }
+    }
+    for (l, a) in acc.iter().enumerate() {
+        _mm256_storeu_ps(dst.as_mut_ptr().add(l * 8), *a);
+    }
+}
+
 #[cfg(test)]
 mod scratch_budget_tests {
     use super::*;
@@ -1230,51 +1276,5 @@ mod scratch_budget_tests {
             engine.process(&input, &mut out);
             assert!(out.iter().all(|v| v.is_finite()));
         }
-    }
-}
-
-/// AVX body of the `df_convp` depthwise taps for one output channel: `dst` (96
-/// floats, 12 registers) stays in registers across all `cpg_in * 5` taps instead
-/// of being loaded and stored per tap as the SSE2 loop does. Each lane adds
-/// `src * w` in the same (ci, k) order with a separate multiply and add, so the
-/// sum is bit-identical to the scalar loop.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn convp_taps_avx(
-    dst: &mut [f32],
-    convp_pad: &[f32],
-    c0: &[f32],
-    taps: &[f32],
-    ci_base: usize,
-    cpg_in: usize,
-    head: usize,
-) {
-    use std::arch::x86_64::*;
-    const LANES: usize = NB_DF / 8;
-    assert!(dst.len() == NB_DF && taps.len() == cpg_in * 5);
-    let mut acc = [_mm256_setzero_ps(); LANES];
-    for (l, a) in acc.iter_mut().enumerate() {
-        *a = _mm256_loadu_ps(dst.as_ptr().add(l * 8));
-    }
-    for ci in 0..cpg_in {
-        let ci_abs = ci_base + ci;
-        for k in 0..5 {
-            let src: &[f32] = if k < 4 {
-                let at = ci_abs * 4 * NB_DF + ((head + k) & 3) * NB_DF;
-                &convp_pad[at..at + NB_DF]
-            } else {
-                &c0[ci_abs * NB_DF..ci_abs * NB_DF + NB_DF]
-            };
-            let w = _mm256_set1_ps(taps[ci * 5 + k]);
-            for (l, a) in acc.iter_mut().enumerate() {
-                *a = _mm256_add_ps(
-                    *a,
-                    _mm256_mul_ps(_mm256_loadu_ps(src.as_ptr().add(l * 8)), w),
-                );
-            }
-        }
-    }
-    for (l, a) in acc.iter().enumerate() {
-        _mm256_storeu_ps(dst.as_mut_ptr().add(l * 8), *a);
     }
 }

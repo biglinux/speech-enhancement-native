@@ -11,7 +11,9 @@ pub(crate) fn matvec(
     rows: usize,
     cols: usize,
 ) {
-    assert!(rows > 0 && rows % 8 == 0 && cols > 0 && cols % 2 == 0 && cols <= 1024);
+    assert!(
+        rows > 0 && rows.is_multiple_of(8) && cols > 0 && cols.is_multiple_of(2) && cols <= 1024
+    );
     assert!(y.len() >= rows && s.len() >= rows && q.len() >= cols && w.len() >= rows * cols);
     // Keep the public-safe arbitrary-i16 contract. The actual quantizer emits ±16383.
     let safe = cols <= 511
@@ -73,9 +75,7 @@ unsafe fn avx2_one(
         let mut a7 = _mm256_setzero_si256();
         for j in (0..cols).step_by(2) {
             let xx = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
-            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 0) * cols + j * 8).cast(),
-            ));
+            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
             a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(w0, xx));
             let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
                 w.as_ptr().add((r + 8) * cols + j * 8).cast(),
@@ -108,12 +108,9 @@ unsafe fn avx2_one(
         }
         let xs = _mm256_set1_ps(sx[0]);
         _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 0),
+            out.as_mut_ptr().add(r),
             _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a0),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 0)),
-                ),
+                _mm256_mul_ps(_mm256_cvtepi32_ps(a0), _mm256_loadu_ps(sw.as_ptr().add(r))),
                 xs,
             ),
         );

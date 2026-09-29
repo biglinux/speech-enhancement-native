@@ -387,8 +387,8 @@ pub(super) fn affine_checked(
 #[target_feature(enable = "avx")]
 unsafe fn affine(c: &Conv, x: View<'_>, out: &mut [f32], of: usize, spacing: usize, offset: usize) {
     for j in (0..64).step_by(32) {
-        let w0 = _mm256_loadu_ps(c.w.as_ptr().add(j + 0));
-        let b0 = _mm256_loadu_ps(c.b.as_ptr().add(j + 0));
+        let w0 = _mm256_loadu_ps(c.w.as_ptr().add(j));
+        let b0 = _mm256_loadu_ps(c.b.as_ptr().add(j));
         let w1 = _mm256_loadu_ps(c.w.as_ptr().add(j + 8));
         let b1 = _mm256_loadu_ps(c.b.as_ptr().add(j + 8));
         let w2 = _mm256_loadu_ps(c.w.as_ptr().add(j + 16));

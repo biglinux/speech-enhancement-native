@@ -171,7 +171,13 @@ impl AudioProcessor {
             self.pending_out.fill(0.0);
             return;
         }
-        for (o, c) in self.spectrum.chunks_exact_mut(2).zip(&self.complex) {
+        for (o, c) in self
+            .spectrum
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(&self.complex)
+        {
             o[0] = c.re;
             o[1] = c.im;
         }
@@ -182,7 +188,7 @@ impl AudioProcessor {
             self.pending_out.fill(0.0);
             return;
         }
-        for (o, x) in self.complex.iter_mut().zip(spec.chunks_exact(2)) {
+        for (o, x) in self.complex.iter_mut().zip(spec.as_chunks::<2>().0) {
             o.re = x[0];
             o.im = x[1];
         }

@@ -1471,13 +1471,13 @@ pub fn gru_cell_q(
     matvec_i8_i16(rh, rq, rs, &xq16[..hs], sh, 3 * hs, hs);
 
     #[cfg(target_arch = "x86_64")]
-    if simd_tier() >= 2 && (hs % 8 == 0) {
+    if simd_tier() >= 2 && hs.is_multiple_of(8) {
         // SAFETY: tier >= 2 means AVX is present; hs is a multiple of 8.
         unsafe { gate8(h, wx, rh, b, hs) };
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if simd_tier() == 1 && (hs % 4 == 0) {
+    if simd_tier() == 1 && hs.is_multiple_of(4) {
         // SAFETY: tier 1 means SSE4.1 is present; hs is a multiple of 4.
         unsafe { gate4(h, wx, rh, b, hs) };
         return;
@@ -2248,12 +2248,12 @@ pub fn gru_update(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32]) {
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if simd_tier() >= 2 && hs % 8 == 0 {
+    if simd_tier() >= 2 && hs.is_multiple_of(8) {
         unsafe { gate8(h, wx, rh, b, hs) };
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    if simd_tier() == 1 && hs % 4 == 0 {
+    if simd_tier() == 1 && hs.is_multiple_of(4) {
         unsafe { gate4(h, wx, rh, b, hs) };
         return;
     }

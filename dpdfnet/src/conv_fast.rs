@@ -119,13 +119,13 @@ macro_rules! first_body {
                     let mut a1 = _mm256_loadu_ps(c.b.as_ptr().add(base + 8));
                     let mut a2 = _mm256_loadu_ps(c.b.as_ptr().add(base + 16));
                     let mut a3 = _mm256_loadu_ps(c.b.as_ptr().add(base + 24));
-                    for t in 0..3 {
+                    for (t, row) in rows.iter().enumerate().take(3) {
                         for k in 0..3 {
                             let xi = f * c.stride + k;
                             if xi < c.pad || xi - c.pad >= x.f {
                                 continue;
                             }
-                            let v = _mm256_set1_ps(rows[t][(xi - c.pad) * c.ci + g]);
+                            let v = _mm256_set1_ps(row[(xi - c.pad) * c.ci + g]);
                             let w = c.w.as_ptr().add((t * 3 + k) * c.co + base);
                             a0 = madd!($fma, v, _mm256_loadu_ps(w), a0);
                             a1 = madd!($fma, v, _mm256_loadu_ps(w.add(8)), a1);
@@ -189,13 +189,13 @@ unsafe fn first_sse(
                 let mut a1 = _mm_loadu_ps(c.b.as_ptr().add(base + 4));
                 let mut a2 = _mm_loadu_ps(c.b.as_ptr().add(base + 8));
                 let mut a3 = _mm_loadu_ps(c.b.as_ptr().add(base + 12));
-                for t in 0..3 {
+                for (t, row) in rows.iter().enumerate().take(3) {
                     for k in 0..3 {
                         let xi = f * c.stride + k;
                         if xi < c.pad || xi - c.pad >= x.f {
                             continue;
                         }
-                        let v = _mm_set1_ps(rows[t][(xi - c.pad) * c.ci + g]);
+                        let v = _mm_set1_ps(row[(xi - c.pad) * c.ci + g]);
                         let w = c.w.as_ptr().add((t * 3 + k) * c.co + base);
                         a0 = _mm_add_ps(a0, _mm_mul_ps(v, _mm_loadu_ps(w)));
                         a1 = _mm_add_ps(a1, _mm_mul_ps(v, _mm_loadu_ps(w.add(4))));
@@ -225,11 +225,10 @@ unsafe fn df5(c: &Conv, x: View<'_>, out: &mut [f32], of: usize, spacing: usize,
             let mut a = _mm_loadu_ps(c.b.as_ptr().add(g * 5));
             let mut fifth = c.b[g * 5 + 4];
             if xi >= c.pad && xi - c.pad < x.f {
-                for t in 0..5 {
-                    let input = &rows[t][(xi - c.pad) * 64 + g * 32..];
+                for (t, row) in rows.iter().enumerate() {
+                    let input = &row[(xi - c.pad) * 64 + g * 32..];
                     let weights = c.w.as_ptr().add(t * 320 + g * 160);
-                    for i in 0..32 {
-                        let v = input[i];
+                    for (i, &v) in input[..32].iter().enumerate() {
                         let w = weights.add(i * 5);
                         a = _mm_add_ps(a, _mm_mul_ps(_mm_loadu_ps(w), _mm_set1_ps(v)));
                         // Must stay mul+add even on FMA hosts: original op<=8 loop.
@@ -408,8 +407,8 @@ unsafe fn df5_avx(
             let b = c.b.as_ptr().add(g * 5);
             let mut a = _mm256_set_m128(_mm_set_ss(*b.add(4)), _mm_loadu_ps(b));
             if xi >= c.pad && xi - c.pad < x.f {
-                for t in 0..5 {
-                    let input = rows[t].as_ptr().add((xi - c.pad) * 64 + g * 32);
+                for (t, row) in rows.iter().enumerate() {
+                    let input = row.as_ptr().add((xi - c.pad) * 64 + g * 32);
                     let weight = w.as_ptr().add(t * 512 + g * 256);
                     for i in 0..32 {
                         // MUL then ADD in the same t/i order, even on an FMA CPU.

@@ -33,8 +33,10 @@ fn main() {
         .read_to_end(&mut ibytes)
         .unwrap();
     let samples: Vec<f32> = ibytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     let (start_s, end_s) = if a.len() >= 5 {
         (a[3].parse::<f32>().unwrap(), a[4].parse::<f32>().unwrap())
@@ -48,24 +50,22 @@ fn main() {
     let mut sum_win = [0.0f64; NB_ERB];
     let mut n = 0u64;
     let mut n_win = 0u64;
-    let mut hop_idx = 0usize;
-    for chunk in samples.chunks(HOP) {
+    for (hop_idx, chunk) in samples.chunks(HOP).enumerate() {
         if chunk.len() < HOP {
             break;
         }
         eng.process(chunk, &mut out);
         let t = (hop_idx * HOP) as f32 / SR as f32;
-        for b in 0..NB_ERB {
-            sum[b] += f64::from(eng.band_db[b]);
+        for (total, &db) in sum.iter_mut().zip(&eng.band_db) {
+            *total += f64::from(db);
         }
         n += 1;
         if t >= start_s && t < end_s {
-            for b in 0..NB_ERB {
-                sum_win[b] += f64::from(eng.band_db[b]);
+            for (total, &db) in sum_win.iter_mut().zip(&eng.band_db) {
+                *total += f64::from(db);
             }
             n_win += 1;
         }
-        hop_idx += 1;
     }
     let bin_hz = SR as f32 / 960.0;
     let mut off = 0usize;

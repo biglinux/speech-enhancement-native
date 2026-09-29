@@ -154,7 +154,7 @@ impl Deref for F32s {
         #[cfg(feature = "r10-resolved-weights")]
         {
             // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-            return unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
         }
         #[cfg(not(feature = "r10-resolved-weights"))]
         // SAFETY: checked length, alignment, little-endian platform and finite values at load.
@@ -214,7 +214,7 @@ impl Deref for I8s {
         #[cfg(feature = "r10-resolved-weights")]
         {
             // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-            return unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
         }
         #[cfg(not(feature = "r10-resolved-weights"))]
         // SAFETY: range was validated; every byte is a valid i8.
@@ -274,7 +274,7 @@ impl Deref for I16s {
     fn deref(&self) -> &[i16] {
         #[cfg(feature = "r10-resolved-weights")]
         {
-            return unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
         }
         #[cfg(not(feature = "r10-resolved-weights"))]
         unsafe {
@@ -433,11 +433,10 @@ impl Bundle {
     pub fn derived_recurrent_bytes(&self) -> usize {
         #[cfg(feature = "r9-recurrent-cache")]
         {
-            return self
-                .recurrent
+            self.recurrent
                 .lock()
                 .map(|m| m.values().map(|v| v.len * 2).sum())
-                .unwrap_or(0);
+                .unwrap_or(0)
         }
         #[cfg(not(feature = "r9-recurrent-cache"))]
         {
@@ -493,7 +492,7 @@ impl Bundle {
     /// Prefer tools/pack_matrices.py to avoid this compatibility-copy allocation.
     pub(crate) fn packed_i8s(&self, v: &Value, rows: usize, cols: usize) -> Result<I8s> {
         require(
-            rows % 8 == 0 && cols % 2 == 0 && rows > 0 && cols > 0,
+            rows.is_multiple_of(8) && cols.is_multiple_of(2) && rows > 0 && cols > 0,
             "pair-packed matrix dimensions",
         )?;
         let original = self.i8s(v, rows * cols)?;

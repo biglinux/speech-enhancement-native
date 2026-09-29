@@ -1521,10 +1521,8 @@ mod rfft_tests {
         bi[n / 2] = 0.0; // Hermitian: DC and Nyquist are real
         // reference: build the full n-point Hermitian spectrum and inverse-FFT it
         let (mut fr, mut fi) = (vec![0.0f32; n], vec![0.0f32; n]);
-        for k in 0..=n / 2 {
-            fr[k] = br[k];
-            fi[k] = bi[k];
-        }
+        fr[..=n / 2].copy_from_slice(&br);
+        fi[..=n / 2].copy_from_slice(&bi);
         for k in 1..n / 2 {
             fr[n - k] = br[k];
             fi[n - k] = -bi[k];

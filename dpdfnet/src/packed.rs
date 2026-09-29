@@ -99,6 +99,8 @@ impl Plan {
             four: scalar::<4>,
         }
     }
+    // The operands of one fused GRU step; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply(
         &self,
         out: &mut [f32],
@@ -111,7 +113,13 @@ impl Plan {
         count: usize,
     ) {
         assert!(count == 1 || count == 4);
-        assert!(rows > 0 && rows % 8 == 0 && cols > 0 && cols % 2 == 0 && cols <= 1024);
+        assert!(
+            rows > 0
+                && rows.is_multiple_of(8)
+                && cols > 0
+                && cols.is_multiple_of(2)
+                && cols <= 1024
+        );
         assert_eq!(w.len(), rows * cols);
         assert_eq!(sw.len(), rows);
         assert_eq!(q.len(), count * cols);
@@ -125,7 +133,7 @@ impl Plan {
 }
 
 pub(crate) fn pack_rows(w: &[i8], rows: usize, cols: usize) -> Vec<i8> {
-    assert!(rows > 0 && rows % 8 == 0 && cols > 0 && cols % 2 == 0);
+    assert!(rows > 0 && rows.is_multiple_of(8) && cols > 0 && cols.is_multiple_of(2));
     assert_eq!(w.len(), rows * cols);
     let mut packed = vec![0i8; w.len()];
     for r in 0..rows {
@@ -178,22 +186,22 @@ unsafe fn avx2<const B: usize>(
         while j + 4 <= cols {
             let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
             let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add((j + 2) * 8).cast()));
-            for k in 0..B {
+            for (k, acc) in a.iter_mut().enumerate() {
                 let x = q.as_ptr().add(k * cols + j);
                 let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
                 let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
-                a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(w0, x0));
+                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
                 b[k] = _mm256_add_epi32(b[k], _mm256_madd_epi16(w1, x1));
             }
             j += 4;
         }
         if j < cols {
             let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
-            for k in 0..B {
+            for (k, acc) in a.iter_mut().enumerate() {
                 let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(
                     q.as_ptr().add(k * cols + j).cast::<i32>(),
                 ));
-                a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(w0, x0));
+                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
             }
         }
         let scales = _mm256_loadu_ps(sw.as_ptr().add(r));
@@ -228,22 +236,22 @@ unsafe fn sse41<const B: usize>(
             while j + 4 <= cols {
                 let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
                 let w1 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add((j + 2) * 8 + half * 2).cast()));
-                for k in 0..B {
+                for (k, acc) in a.iter_mut().enumerate() {
                     let x = q.as_ptr().add(k * cols + j);
                     let x0 = _mm_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
                     let x1 = _mm_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
-                    a[k] = _mm_add_epi32(a[k], _mm_madd_epi16(w0, x0));
+                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
                     b[k] = _mm_add_epi32(b[k], _mm_madd_epi16(w1, x1));
                 }
                 j += 4;
             }
             if j < cols {
                 let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
-                for k in 0..B {
+                for (k, acc) in a.iter_mut().enumerate() {
                     let x0 = _mm_set1_epi32(std::ptr::read_unaligned(
                         q.as_ptr().add(k * cols + j).cast::<i32>(),
                     ));
-                    a[k] = _mm_add_epi32(a[k], _mm_madd_epi16(w0, x0));
+                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
                 }
             }
             let scales = _mm_loadu_ps(sw.as_ptr().add(r + half));
@@ -413,7 +421,13 @@ impl PairPlan {
         rows: usize,
         cols: usize,
     ) {
-        assert!(rows > 0 && rows % 8 == 0 && cols > 0 && cols % 2 == 0 && cols <= 1024);
+        assert!(
+            rows > 0
+                && rows.is_multiple_of(8)
+                && cols > 0
+                && cols.is_multiple_of(2)
+                && cols <= 1024
+        );
         assert_eq!(wa.len(), rows * cols);
         assert_eq!(wb.len(), rows * cols);
         assert_eq!(sa.len(), rows);
@@ -471,7 +485,7 @@ mod round8_pair_tests {
                     let q: Vec<i16> = (0..4 * cols)
                         .map(|i| {
                             if extreme {
-                                if i / cols % 2 == 0 {
+                                if (i / cols).is_multiple_of(2) {
                                     16383
                                 } else {
                                     -16383

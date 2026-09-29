@@ -544,7 +544,7 @@ pub fn gru8(
 pub fn quantize_i16(x: &[f32], out: &mut [i16]) -> f32 {
     #[cfg(feature = "r11-quant")]
     {
-        return quant::quantize(x, out);
+        quant::quantize(x, out)
     }
     #[cfg(not(feature = "r11-quant"))]
     {
@@ -661,8 +661,8 @@ unsafe fn exp8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
         let bias = _mm_set1_epi32(127);
         let lo = _mm_slli_epi32::<23>(_mm_add_epi32(_mm256_castsi256_si128(ri), bias));
         let hi = _mm_slli_epi32::<23>(_mm_add_epi32(_mm256_extractf128_si256::<1>(ri), bias));
-        let answer = _mm256_set_m128(_mm_castsi128_ps(hi), _mm_castsi128_ps(lo));
-        answer
+
+        _mm256_set_m128(_mm_castsi128_ps(hi), _mm_castsi128_ps(lo))
     };
     _mm256_mul_ps(p, pow2)
 }

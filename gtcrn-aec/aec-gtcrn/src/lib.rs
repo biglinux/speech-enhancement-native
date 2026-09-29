@@ -451,8 +451,10 @@ mod tests {
         let raw = &b[data_off..];
         assert_eq!(raw.len() % 4, 0, "truncated f32 fixture");
         let f = raw
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect();
         (shape, f)
     }

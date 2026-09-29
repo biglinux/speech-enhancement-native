@@ -40,11 +40,11 @@ struct Names([*const c_char; 5]);
 unsafe impl Sync for Names {}
 static PORTS: [c_int; 5] = [1 | 8, 2 | 8, 1 | 4, 2 | 4, 2 | 4];
 static NAMES: Names = Names([
-    b"Input\0".as_ptr().cast(),
-    b"Output\0".as_ptr().cast(),
-    b"Attenuation Limit (dB)\0".as_ptr().cast(),
-    b"latency\0".as_ptr().cast(),
-    b"Processing fault\0".as_ptr().cast(),
+    c"Input".as_ptr(),
+    c"Output".as_ptr(),
+    c"Attenuation Limit (dB)".as_ptr(),
+    c"latency".as_ptr(),
+    c"Processing fault".as_ptr(),
 ]);
 static HINTS: [Hint; 5] = [
     Hint {
@@ -75,14 +75,12 @@ static HINTS: [Hint; 5] = [
 ];
 static DESC: Descriptor = Descriptor {
     unique_id: 57941,
-    label: b"dpdfnet_native_48hr\0".as_ptr().cast(),
+    label: c"dpdfnet_native_48hr".as_ptr(),
     // Do NOT claim HARD_RT_CAPABLE until measured on the deployment target and allocator-tested.
     properties: 0,
-    name: b"DPDFNet native 48k HR\0".as_ptr().cast(),
-    maker: b"BigLinux\0".as_ptr().cast(),
-    copyright: b"MIT OR Apache-2.0; DPDFNet weights Apache-2.0\0"
-        .as_ptr()
-        .cast(),
+    name: c"DPDFNet native 48k HR".as_ptr(),
+    maker: c"BigLinux".as_ptr(),
+    copyright: c"MIT OR Apache-2.0; DPDFNet weights Apache-2.0".as_ptr(),
     port_count: 5,
     port_descriptors: PORTS.as_ptr(),
     port_names: NAMES.0.as_ptr(),
@@ -184,7 +182,7 @@ unsafe extern "C" fn cleanup(h: *mut c_void) {
         drop(unsafe { Box::from_raw(h.cast::<Instance>()) });
     }
     if let Ok(mut cache) = CACHE.lock() {
-        if cache.as_ref().map_or(false, |(_, w)| w.strong_count() == 0) {
+        if cache.as_ref().is_some_and(|(_, w)| w.strong_count() == 0) {
             *cache = None;
         }
     }

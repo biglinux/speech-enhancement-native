@@ -310,9 +310,9 @@ unsafe fn dot4_avx2(w: &[i8], x: &[i16], n: usize) -> [i32; 4] {
     let mut j = 0;
     while j < end {
         let ww = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(j).cast()));
-        for k in 0..4 {
+        for (k, acc) in a.iter_mut().enumerate() {
             let xx = _mm256_loadu_si256(x.as_ptr().add(k * n + j).cast());
-            a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(ww, xx));
+            *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(ww, xx));
         }
         j += 16;
     }
@@ -341,9 +341,9 @@ unsafe fn dot4_sse(w: &[i8], x: &[i16], n: usize) -> [i32; 4] {
     let mut j = 0;
     while j < end {
         let ww = _mm_cvtepi8_epi16(_mm_loadl_epi64(w.as_ptr().add(j).cast()));
-        for k in 0..4 {
+        for (k, acc) in a.iter_mut().enumerate() {
             let xx = _mm_loadu_si128(x.as_ptr().add(k * n + j).cast());
-            a[k] = _mm_add_epi32(a[k], _mm_madd_epi16(ww, xx));
+            *acc = _mm_add_epi32(*acc, _mm_madd_epi16(ww, xx));
         }
         j += 8;
     }

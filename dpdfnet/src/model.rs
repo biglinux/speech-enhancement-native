@@ -41,8 +41,10 @@ impl DeepFilter {
         // Upstream before_df: mask(t) multiplies spectrum(t-2), NOT current spectrum.
         for ((dst, src), &m) in self
             .temp
-            .chunks_exact_mut(2)
-            .zip(self.raw.frame(2).chunks_exact(2))
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(self.raw.frame(2).as_chunks::<2>().0)
             .zip(mask)
         {
             dst[0] = src[0] * m;

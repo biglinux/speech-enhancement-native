@@ -32,63 +32,59 @@ unsafe fn group8(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize) 
         let mut a6_0 = _mm256_setzero_ps();
         let mut a7_0 = _mm256_setzero_ps();
         for i in 0..ip {
-            let xx = _mm256_set1_ps(*x.get_unchecked((g + 0) * ip + i));
-            a0_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 8 + 0)),
-                xx,
-                a0_0,
-            );
+            let xx = _mm256_set1_ps(*x.get_unchecked(g * ip + i));
+            a0_0 = _mm256_fmadd_ps(_mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 8)), xx, a0_0);
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 1) * ip + i));
             a1_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 8)),
                 xx,
                 a1_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 2) * ip + i));
             a2_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 2) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 2) * ip + i) * 8)),
                 xx,
                 a2_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 3) * ip + i));
             a3_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 3) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 3) * ip + i) * 8)),
                 xx,
                 a3_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 4) * ip + i));
             a4_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 4) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 4) * ip + i) * 8)),
                 xx,
                 a4_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 5) * ip + i));
             a5_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 5) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 5) * ip + i) * 8)),
                 xx,
                 a5_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 6) * ip + i));
             a6_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 6) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 6) * ip + i) * 8)),
                 xx,
                 a6_0,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 7) * ip + i));
             a7_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 7) * ip + i) * 8 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 7) * ip + i) * 8)),
                 xx,
                 a7_0,
             );
         }
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 8 + 0), a0_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 8 + 0), a1_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 2) * 8 + 0), a2_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 3) * 8 + 0), a3_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 4) * 8 + 0), a4_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 5) * 8 + 0), a5_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 6) * 8 + 0), a6_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 7) * 8 + 0), a7_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 8), a0_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 8), a1_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 2) * 8), a2_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 3) * 8), a3_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 4) * 8), a4_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 5) * 8), a5_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 6) * 8), a6_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 7) * 8), a7_0);
         g += 8;
     }
     while g < groups {
@@ -115,20 +111,16 @@ unsafe fn group16(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
         let mut a3_0 = _mm256_setzero_ps();
         let mut a3_1 = _mm256_setzero_ps();
         for i in 0..ip {
-            let xx = _mm256_set1_ps(*x.get_unchecked((g + 0) * ip + i));
-            a0_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 16 + 0)),
-                xx,
-                a0_0,
-            );
+            let xx = _mm256_set1_ps(*x.get_unchecked(g * ip + i));
+            a0_0 = _mm256_fmadd_ps(_mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 16)), xx, a0_0);
             a0_1 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 16 + 8)),
+                _mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 16 + 8)),
                 xx,
                 a0_1,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 1) * ip + i));
             a1_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 16 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 16)),
                 xx,
                 a1_0,
             );
@@ -139,7 +131,7 @@ unsafe fn group16(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 2) * ip + i));
             a2_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 2) * ip + i) * 16 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 2) * ip + i) * 16)),
                 xx,
                 a2_0,
             );
@@ -150,7 +142,7 @@ unsafe fn group16(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 3) * ip + i));
             a3_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 3) * ip + i) * 16 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 3) * ip + i) * 16)),
                 xx,
                 a3_0,
             );
@@ -160,13 +152,13 @@ unsafe fn group16(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
                 a3_1,
             );
         }
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 16 + 0), a0_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 16 + 8), a0_1);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 16 + 0), a1_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 16), a0_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 16 + 8), a0_1);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 16), a1_0);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 16 + 8), a1_1);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 2) * 16 + 0), a2_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 2) * 16), a2_0);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 2) * 16 + 8), a2_1);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 3) * 16 + 0), a3_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 3) * 16), a3_0);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 3) * 16 + 8), a3_1);
         g += 4;
     }
@@ -194,30 +186,26 @@ unsafe fn group32(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
         let mut a1_2 = _mm256_setzero_ps();
         let mut a1_3 = _mm256_setzero_ps();
         for i in 0..ip {
-            let xx = _mm256_set1_ps(*x.get_unchecked((g + 0) * ip + i));
-            a0_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 32 + 0)),
-                xx,
-                a0_0,
-            );
+            let xx = _mm256_set1_ps(*x.get_unchecked(g * ip + i));
+            a0_0 = _mm256_fmadd_ps(_mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 32)), xx, a0_0);
             a0_1 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 32 + 8)),
+                _mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 32 + 8)),
                 xx,
                 a0_1,
             );
             a0_2 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 32 + 16)),
+                _mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 32 + 16)),
                 xx,
                 a0_2,
             );
             a0_3 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 0) * ip + i) * 32 + 24)),
+                _mm256_loadu_ps(w.as_ptr().add((g * ip + i) * 32 + 24)),
                 xx,
                 a0_3,
             );
             let xx = _mm256_set1_ps(*x.get_unchecked((g + 1) * ip + i));
             a1_0 = _mm256_fmadd_ps(
-                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 32 + 0)),
+                _mm256_loadu_ps(w.as_ptr().add(((g + 1) * ip + i) * 32)),
                 xx,
                 a1_0,
             );
@@ -237,11 +225,11 @@ unsafe fn group32(y: &mut [f32], x: &[f32], w: &[f32], groups: usize, ip: usize)
                 a1_3,
             );
         }
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 32 + 0), a0_0);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 32 + 8), a0_1);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 32 + 16), a0_2);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 0) * 32 + 24), a0_3);
-        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 32 + 0), a1_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 32), a0_0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 32 + 8), a0_1);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 32 + 16), a0_2);
+        _mm256_storeu_ps(y.as_mut_ptr().add(g * 32 + 24), a0_3);
+        _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 32), a1_0);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 32 + 8), a1_1);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 32 + 16), a1_2);
         _mm256_storeu_ps(y.as_mut_ptr().add((g + 1) * 32 + 24), a1_3);

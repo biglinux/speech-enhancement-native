@@ -22,7 +22,7 @@ impl Writer {
         (self.seed as f32 / u32::MAX as f32 - 0.5) * 0.07
     }
     pub(crate) fn floats(&mut self, values: &[f32]) -> Value {
-        while self.bytes.len() % 4 != 0 {
+        while !self.bytes.len().is_multiple_of(4) {
             self.bytes.push(0);
         }
         let offset = self.bytes.len();

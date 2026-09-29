@@ -17,12 +17,16 @@ impl W {
             "DFNPAIR1 requires r11-packed"
         );
         let f32buf = bytes[section.f]
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         let scbuf = bytes[section.s]
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
         let mut integers = bytes[section.i].to_vec();
         if cfg!(feature = "r11-packed") && !section.packed {
@@ -46,10 +50,12 @@ impl W {
     /// Embedded blob is immutably borrowed; packing was done by build.rs.
     /// Header and section offsets are checked before constructing typed views.
     pub fn from_static_aligned(bytes: &'static [u8]) -> Self {
-        assert!(
-            cfg!(target_endian = "little"),
-            "embedded views require little endian"
-        );
+        const {
+            assert!(
+                cfg!(target_endian = "little"),
+                "embedded views require little endian"
+            )
+        };
         assert_eq!(bytes.as_ptr() as usize % 4, 0, "embedded alignment");
         let g = dfn_ops::pack_format::Geometry::DFN3;
         let section = dfn_ops::pack_format::sections(bytes, g).expect("invalid embedded weights");

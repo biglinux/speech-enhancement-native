@@ -24,7 +24,7 @@ pub(super) unsafe fn matvec_avx(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n
             s6 = _mm256_add_ps(s6, _mm256_mul_ps(_mm256_loadu_ps(row.add(48)), xx));
             s7 = _mm256_add_ps(s7, _mm256_mul_ps(_mm256_loadu_ps(row.add(56)), xx));
         }
-        _mm256_storeu_ps(y.as_mut_ptr().add(j + 0), s0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(j), s0);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 8), s1);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 16), s2);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 24), s3);
@@ -78,7 +78,7 @@ pub(super) unsafe fn matvec_avx2(y: &mut [f32], a: &[f32], x: &[f32], m: usize, 
             s6 = _mm256_fmadd_ps(_mm256_loadu_ps(row.add(48)), xx, s6);
             s7 = _mm256_fmadd_ps(_mm256_loadu_ps(row.add(56)), xx, s7);
         }
-        _mm256_storeu_ps(y.as_mut_ptr().add(j + 0), s0);
+        _mm256_storeu_ps(y.as_mut_ptr().add(j), s0);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 8), s1);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 16), s2);
         _mm256_storeu_ps(y.as_mut_ptr().add(j + 24), s3);
@@ -132,7 +132,7 @@ pub(super) unsafe fn matvec_sse(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n
             s6 = _mm_add_ps(s6, _mm_mul_ps(_mm_loadu_ps(row.add(24)), xx));
             s7 = _mm_add_ps(s7, _mm_mul_ps(_mm_loadu_ps(row.add(28)), xx));
         }
-        _mm_storeu_ps(y.as_mut_ptr().add(j + 0), s0);
+        _mm_storeu_ps(y.as_mut_ptr().add(j), s0);
         _mm_storeu_ps(y.as_mut_ptr().add(j + 4), s1);
         _mm_storeu_ps(y.as_mut_ptr().add(j + 8), s2);
         _mm_storeu_ps(y.as_mut_ptr().add(j + 12), s3);

@@ -320,9 +320,9 @@ impl Conv {
                         }
                     } else if op == 1 {
                         // Final spectral mask: one SIMD dot per tap, not ci tiny AXPY calls.
-                        for g in 0..self.groups {
+                        for (g, yg) in y.iter_mut().enumerate().take(self.groups) {
                             let start = g * ip;
-                            y[g] += crate::kernels::dot_f32(
+                            *yg += crate::kernels::dot_f32(
                                 &self.w[base + start..base + start + ip],
                                 &xr[start..start + ip],
                             );
