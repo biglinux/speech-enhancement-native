@@ -9,11 +9,7 @@ description = "Shared int8/SIMD numeric kernels for the DeepFilterNet LADSPA den
 libc = "0.2"
 
 [features]
-default = []
-r11-packed = []
-r11-quant = []
-r11-matvec = []
-r11-exp-bits = []
-r11-zr-schedule = []
+# Diagnostics: cap the SIMD tier the project kernels select at run time, to
+# compare tiers on one machine. Never enabled by a package build.
 force-sse41 = []
 force-avx1 = []

@@ -12,17 +12,9 @@ fn main() {
         });
     println!("cargo:rerun-if-changed={}", path.display());
     let raw=std::fs::read(&path).unwrap_or_else(|e|panic!("Weights missing/unreadable: {}: {e}. Restore the ORIGINAL dfn3ll_weights.bin or set DFN3LL_WEIGHTS; no dummy weights are generated.",path.display()));
-    let g = pack_format::Geometry::DFN3LL;
-    let sections = pack_format::sections(&raw, g).expect("invalid model weight format");
-    let packed = std::env::var_os("CARGO_FEATURE_R11_PACKED").is_some();
-    if sections.packed && !packed {
-        panic!("DFNPAIR1 requires r11-packed; provide legacy row-major weights for the control");
-    }
-    let bytes = if packed {
-        pack_format::convert(&raw, g).expect("packing failed")
-    } else {
-        raw
-    };
+    // The engine reads the pair-packed layout; row-major files are packed here.
+    let bytes = pack_format::convert(&raw, pack_format::Geometry::DFN3LL)
+        .expect("invalid model weight format");
     std::fs::write(
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("embedded_weights.bin"),
         bytes,

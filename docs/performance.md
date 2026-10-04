@@ -43,6 +43,8 @@ taskset -c 4 perf stat -e task-clock,cycles:u,instructions:u -- <command>
 - **No `target-cpu`.** The packages run on any x86-64. Wider SIMD is reached only
   through `#[target_feature]` functions chosen at runtime by `simd_tier()`
   (0 scalar, 1 SSE4.1, 2 AVX, 3 AVX2+FMA), which is resolved once and cached.
+  The diagnostic features `force-sse41` and `force-avx1` cap that tier, to
+  compare tiers on one machine; packages never enable them.
 - **f32 reductions do not autovectorize** without fast-math, so every dot
   product that matters has an explicit kernel.
 - **Bit identity across tiers:** exact kernels use separate multiply and add

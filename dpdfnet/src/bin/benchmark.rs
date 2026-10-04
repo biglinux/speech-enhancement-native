@@ -87,7 +87,7 @@ fn go() -> Result<(), String> {
         "hot_allocations":allocations,"hot_deallocations":frees,"processed_hops":p.hops,
         "fault":p.faulted(),"checksum":checksum,"weight_bytes":bundle.weight_bytes(),
         "compatibility_packed_bytes":bundle.compatibility_packed_bytes(),
-        "features":{"packed_gru":cfg!(feature="packed-gru"),"specialized_conv":cfg!(feature="specialized-conv"),"dprnn_exact":cfg!(feature="dprnn-exact"),"force_sse41":cfg!(feature="force-sse41")},
+        "diagnostics":{"scalar_reference":cfg!(feature = "scalar-reference"),"force_avx1":cfg!(feature = "force-avx1"),"force_sse41":cfg!(feature = "force-sse41")},
         "note":"Wall-clock measurement in this process; obtain CPU time and RSS separately with /usr/bin/time -v."});
     println!(
         "{}",

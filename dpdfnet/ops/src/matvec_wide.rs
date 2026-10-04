@@ -1,6 +1,6 @@
-//! Exact candidate schedules. Input reduction order and FMA policy are kept.
-//! Larger output tiles supply more independent accumulators; this is NOT the
-//! rejected four-position weight-reuse pointwise experiment.
+//! f32 matrix-vector products over wide output tiles, for 64 or more outputs
+//! (32 on SSE). More independent accumulators per pass; every output keeps the
+//! reduction order and FMA policy of the narrow kernels, so results are equal.
 use std::arch::x86_64::*;
 
 #[target_feature(enable = "avx")]
@@ -165,112 +165,6 @@ pub(super) unsafe fn matvec_sse(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n
     }
 }
 
-#[target_feature(enable = "avx")]
-pub(super) unsafe fn amax_avx(x: &[f32]) -> f32 {
-    if x.len() < 32 {
-        return super::abs_max_avx(x);
-    }
-    let mask = _mm256_set1_ps(f32::from_bits(0x7fff_ffff));
-    let mut bad = _mm256_setzero_ps();
-    let mut m0 = _mm256_setzero_ps();
-    let mut m1 = _mm256_setzero_ps();
-    let mut m2 = _mm256_setzero_ps();
-    let mut m3 = _mm256_setzero_ps();
-    let mut i = 0usize;
-    while i + 32 <= x.len() {
-        let v0 = _mm256_and_ps(_mm256_loadu_ps(x.as_ptr().add(i)), mask);
-        bad = _mm256_or_ps(bad, _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(v0, v0));
-        m0 = _mm256_max_ps(m0, v0);
-        let v1 = _mm256_and_ps(_mm256_loadu_ps(x.as_ptr().add(i + 8)), mask);
-        bad = _mm256_or_ps(bad, _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(v1, v1));
-        m1 = _mm256_max_ps(m1, v1);
-        let v2 = _mm256_and_ps(_mm256_loadu_ps(x.as_ptr().add(i + 16)), mask);
-        bad = _mm256_or_ps(bad, _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(v2, v2));
-        m2 = _mm256_max_ps(m2, v2);
-        let v3 = _mm256_and_ps(_mm256_loadu_ps(x.as_ptr().add(i + 24)), mask);
-        bad = _mm256_or_ps(bad, _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(v3, v3));
-        m3 = _mm256_max_ps(m3, v3);
-        i += 32;
-    }
-    if _mm256_movemask_ps(bad) != 0 {
-        return super::abs_max_avx(x);
-    }
-    let mut acc = _mm256_max_ps(_mm256_max_ps(m0, m1), _mm256_max_ps(m2, m3));
-    while i + 8 <= x.len() {
-        let v = _mm256_and_ps(_mm256_loadu_ps(x.as_ptr().add(i)), mask);
-        if _mm256_movemask_ps(_mm256_cmp_ps::<{ _CMP_UNORD_Q }>(v, v)) != 0 {
-            return super::abs_max_avx(x);
-        }
-        acc = _mm256_max_ps(acc, v);
-        i += 8;
-    }
-    let mut lanes = [0.0f32; 8];
-    _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
-    let mut result = lanes.iter().copied().fold(0.0f32, f32::max);
-    while i < x.len() {
-        let v = *x.get_unchecked(i);
-        if v.is_nan() {
-            return super::abs_max_avx(x);
-        }
-        result = result.max(v.abs());
-        i += 1;
-    }
-    result
-}
-
-#[target_feature(enable = "sse4.1")]
-pub(super) unsafe fn amax_sse(x: &[f32]) -> f32 {
-    if x.len() < 16 {
-        return super::abs_max_sse(x);
-    }
-    let mask = _mm_set1_ps(f32::from_bits(0x7fff_ffff));
-    let mut bad = _mm_setzero_ps();
-    let mut m0 = _mm_setzero_ps();
-    let mut m1 = _mm_setzero_ps();
-    let mut m2 = _mm_setzero_ps();
-    let mut m3 = _mm_setzero_ps();
-    let mut i = 0usize;
-    while i + 16 <= x.len() {
-        let v0 = _mm_and_ps(_mm_loadu_ps(x.as_ptr().add(i)), mask);
-        bad = _mm_or_ps(bad, _mm_cmpunord_ps(v0, v0));
-        m0 = _mm_max_ps(m0, v0);
-        let v1 = _mm_and_ps(_mm_loadu_ps(x.as_ptr().add(i + 4)), mask);
-        bad = _mm_or_ps(bad, _mm_cmpunord_ps(v1, v1));
-        m1 = _mm_max_ps(m1, v1);
-        let v2 = _mm_and_ps(_mm_loadu_ps(x.as_ptr().add(i + 8)), mask);
-        bad = _mm_or_ps(bad, _mm_cmpunord_ps(v2, v2));
-        m2 = _mm_max_ps(m2, v2);
-        let v3 = _mm_and_ps(_mm_loadu_ps(x.as_ptr().add(i + 12)), mask);
-        bad = _mm_or_ps(bad, _mm_cmpunord_ps(v3, v3));
-        m3 = _mm_max_ps(m3, v3);
-        i += 16;
-    }
-    if _mm_movemask_ps(bad) != 0 {
-        return super::abs_max_sse(x);
-    }
-    let mut acc = _mm_max_ps(_mm_max_ps(m0, m1), _mm_max_ps(m2, m3));
-    while i + 4 <= x.len() {
-        let v = _mm_and_ps(_mm_loadu_ps(x.as_ptr().add(i)), mask);
-        if _mm_movemask_ps(_mm_cmpunord_ps(v, v)) != 0 {
-            return super::abs_max_sse(x);
-        }
-        acc = _mm_max_ps(acc, v);
-        i += 4;
-    }
-    let mut lanes = [0.0f32; 4];
-    _mm_storeu_ps(lanes.as_mut_ptr(), acc);
-    let mut result = lanes.iter().copied().fold(0.0f32, f32::max);
-    while i < x.len() {
-        let v = *x.get_unchecked(i);
-        if v.is_nan() {
-            return super::abs_max_sse(x);
-        }
-        result = result.max(v.abs());
-        i += 1;
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,60 +204,6 @@ mod tests {
                     assert_eq!(bits(&y[1..n + 1]), bits(&reference), "m={m} n={n}");
                     assert_eq!(y[0], 91.0);
                     assert_eq!(y[n + 1], 91.0);
-                }
-            }
-        }
-    }
-    #[test]
-    fn four_chain_max_preserves_all_values_and_nonfinite_fallback() {
-        type Max = unsafe fn(&[f32]) -> f32;
-        let mut pairs: Vec<(Max, Max)> = Vec::new();
-        if std::is_x86_feature_detected!("sse4.1") {
-            pairs.push((amax_sse, super::super::abs_max_sse));
-        }
-        if std::is_x86_feature_detected!("avx") {
-            pairs.push((amax_avx, super::super::abs_max_avx));
-        }
-        for n in [32usize, 64, 128, 256] {
-            for base in [0u32, 1, 127, 0x7ffff0, 0x00800000] {
-                let x: Vec<f32> = (0..n)
-                    .map(|i| f32::from_bits(base + (i % 16) as u32))
-                    .collect();
-                for &(new, old) in &pairs {
-                    assert_eq!(unsafe { new(&x) }.to_bits(), unsafe { old(&x) }.to_bits());
-                }
-            }
-        }
-        for n in [
-            0usize, 1, 3, 4, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 255, 256, 257,
-        ] {
-            let mut x: Vec<f32> = (0..n)
-                .map(|i| ((i * 71 % 257) as f32 - 128.0) / 137.5)
-                .collect();
-            for &(new, old) in &pairs {
-                assert_eq!(unsafe { new(&x) }.to_bits(), unsafe { old(&x) }.to_bits());
-            }
-            for special in [
-                0.0f32,
-                -0.0,
-                f32::from_bits(1),
-                -f32::from_bits(3),
-                f32::MIN_POSITIVE,
-                f32::MAX,
-                f32::INFINITY,
-                f32::NAN,
-            ] {
-                for i in 0..n {
-                    let saved = x[i];
-                    x[i] = special;
-                    for &(new, old) in &pairs {
-                        assert_eq!(
-                            unsafe { new(&x) }.to_bits(),
-                            unsafe { old(&x) }.to_bits(),
-                            "n={n} i={i} special={special}"
-                        );
-                    }
-                    x[i] = saved;
                 }
             }
         }

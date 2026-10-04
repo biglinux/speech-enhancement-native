@@ -1,10 +1,8 @@
-#[cfg(any(feature = "r11-packed", feature = "r11-matvec"))]
 fn vectors(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| ((i * 71 % 107) as f32 - 53.0) / 53.0)
         .collect()
 }
-#[cfg(feature = "r11-quant")]
 #[test]
 fn quantizer_preserves_legacy_extremes_ties_and_tails() {
     let mut data = vec![
@@ -52,7 +50,6 @@ fn quantizer_preserves_legacy_extremes_ties_and_tails() {
         assert_eq!(a, b);
     }
 }
-#[cfg(feature = "r11-packed")]
 #[test]
 fn packed_products_equal_int128_reference() {
     for n in [2, 6, 64, 256, 512, 1024] {
@@ -83,7 +80,6 @@ fn packed_products_equal_int128_reference() {
         }
     }
 }
-#[cfg(feature = "r11-packed")]
 #[test]
 fn packed_gru_matches_row_major_same_tier() {
     for h in [64, 256, 512] {
@@ -116,7 +112,7 @@ fn packed_gru_matches_row_major_same_tier() {
         }
     }
 }
-#[cfg(all(feature = "r11-matvec", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn matvec_reblocking_same_tier_bits() {
     for m in [1, 7, 16, 32, 64, 96, 256, 512] {

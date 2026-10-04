@@ -12,10 +12,6 @@ impl W {
     pub fn load(bytes: &[u8]) -> Self {
         let g = dfn_ops::pack_format::Geometry::DFN3LL;
         let section = dfn_ops::pack_format::sections(bytes, g).expect("invalid weights");
-        assert!(
-            !section.packed || cfg!(feature = "r11-packed"),
-            "DFNPAIR1 requires r11-packed"
-        );
         let f32buf = bytes[section.f]
             .as_chunks::<4>()
             .0
@@ -29,7 +25,7 @@ impl W {
             .map(|b| f32::from_le_bytes(*b))
             .collect();
         let mut integers = bytes[section.i].to_vec();
-        if cfg!(feature = "r11-packed") && !section.packed {
+        if !section.packed {
             for m in 0..g.matrices() {
                 let k = m * g.matrix_len();
                 let p = dfn_ops::pack_format::pack_matrix(
@@ -59,11 +55,7 @@ impl W {
         assert_eq!(bytes.as_ptr() as usize % 4, 0, "embedded alignment");
         let g = dfn_ops::pack_format::Geometry::DFN3LL;
         let section = dfn_ops::pack_format::sections(bytes, g).expect("invalid embedded weights");
-        assert_eq!(
-            section.packed,
-            cfg!(feature = "r11-packed"),
-            "embedded layout/feature mismatch"
-        );
+        assert!(section.packed, "build.rs embeds packed weights");
         // SAFETY: canonical ranges validated above, aligned f32 sections, static owner.
         let f32buf = unsafe {
             std::slice::from_raw_parts(bytes.as_ptr().add(section.f.start).cast::<f32>(), g.floats)

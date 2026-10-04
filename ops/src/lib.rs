@@ -9,15 +9,11 @@
 #![allow(clippy::needless_range_loop)] // numeric kernels index by design
 #![allow(clippy::too_many_arguments)] // GRU/GEMV kernels take weight+bias+dims explicitly
 
-#[cfg(all(feature = "r11-matvec", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 mod matvec_port;
 pub mod pack_format;
-#[cfg(feature = "r11-packed")]
 mod packed;
-#[cfg(feature = "r11-quant")]
 mod quant;
-#[cfg(feature = "r11-zr-schedule")]
-mod zr_schedule;
 /// Flush-to-zero + denormals-are-zero on the calling (real-time) thread. The
 /// recurrent FP32 state decays toward denormal magnitudes when the input goes
 /// quiet; without FTZ/DAZ, denormal arithmetic on x86 is 10-100x slower and can
@@ -542,14 +538,7 @@ pub fn gru8(
 /// 14-bit activation (~80 dB) keeps the int32 `pmaddwd` accumulator well below 2^31
 /// (127·16383·512 ≈ 1.07e9) so the GEMV is exact-integer and deterministic.
 pub fn quantize_i16(x: &[f32], out: &mut [i16]) -> f32 {
-    #[cfg(feature = "r11-quant")]
-    {
-        quant::quantize(x, out)
-    }
-    #[cfg(not(feature = "r11-quant"))]
-    {
-        quantize_i16_reference(x, out)
-    }
+    quant::quantize(x, out)
 }
 fn quantize_i16_reference(x: &[f32], out: &mut [i16]) -> f32 {
     assert!(out.len() >= x.len(), "quantize_i16: output too short");
@@ -650,12 +639,6 @@ unsafe fn exp8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
     p = step(p, 0.5);
     p = step(p, 1.0);
     p = step(p, 1.0);
-    #[cfg(feature = "r11-exp-bits")]
-    let pow2 = _mm256_castsi256_ps(_mm256_cvttps_epi32(_mm256_mul_ps(
-        _mm256_add_ps(r, _mm256_set1_ps(127.0)),
-        _mm256_set1_ps(8388608.0),
-    )));
-    #[cfg(not(feature = "r11-exp-bits"))]
     let pow2 = {
         let ri = _mm256_cvtps_epi32(r);
         let bias = _mm_set1_epi32(127);
@@ -759,19 +742,10 @@ pub fn log10_slice(out: &mut [f32]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn gate8(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
-    #[cfg(feature = "r11-zr-schedule")]
-    {
-        zr_schedule::gate(h, wx, rh, b, hs);
-    }
-    #[cfg(not(feature = "r11-zr-schedule"))]
-    {
-        gate8_reference(h, wx, rh, b, hs);
-    }
+    gate8_reference(h, wx, rh, b, hs);
 }
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(all(feature = "r11-zr-schedule", not(test)), allow(dead_code))]
 #[target_feature(enable = "avx")]
-#[cfg(any(test, not(feature = "r11-zr-schedule")))]
 unsafe fn gate8_reference(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
     use std::arch::x86_64::*;
     let one = _mm256_set1_ps(1.0);
@@ -878,7 +852,7 @@ unsafe fn matvec_i8_i16_sse(
 pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
     assert!(y.len() >= n && x.len() >= m);
     assert!(a.len() >= m.checked_mul(n).expect("matvec_t dimensions overflow"));
-    #[cfg(all(feature = "r11-matvec", target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     {
         match simd_tier() {
             3 => {
@@ -896,22 +870,6 @@ pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
             _ => {}
         }
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        match simd_tier() {
-            3 => {
-                // SAFETY: tier 3 means AVX2+FMA is present.
-                unsafe { matvec_t_avx2(y, a, x, m, n) };
-                return;
-            }
-            2 => {
-                // SAFETY: tier 2 means AVX is present.
-                unsafe { matvec_t_avx(y, a, x, m, n) };
-                return;
-            }
-            _ => {}
-        }
-    }
     y[..n].fill(0.0);
     for i in 0..m {
         let row = &a[i * n..i * n + n];
@@ -924,7 +882,7 @@ pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
-#[cfg_attr(feature = "r11-matvec", allow(dead_code))]
+#[cfg(test)] // the reference matvec_port is checked against
 unsafe fn matvec_t_avx(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
     use std::arch::x86_64::*;
     for v in y[..n].iter_mut() {
@@ -953,7 +911,7 @@ unsafe fn matvec_t_avx(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) 
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-#[cfg_attr(feature = "r11-matvec", allow(dead_code))]
+#[cfg(test)] // the reference matvec_port is checked against
 unsafe fn matvec_t_avx2(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
     use std::arch::x86_64::*;
     for v in y[..n].iter_mut() {
@@ -1742,7 +1700,6 @@ mod safe_boundary_tests {
     }
 }
 
-#[cfg(feature = "r11-packed")]
 #[allow(clippy::too_many_arguments)]
 pub fn gru_cell_packed(
     h: &mut [f32],
@@ -1782,7 +1739,7 @@ pub fn gru_cell_packed(
 }
 
 #[cfg(test)]
-mod round11_tests;
+mod kernel_tests;
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn simd_tier() -> u8 {

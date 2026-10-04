@@ -1,59 +1,9 @@
-//! Old-CPU experiments over the EXISTING pair-output8-v1 bytes.
-//! No repacking, wider weight copy, quantization change, or heap allocation.
+//! 128-bit integer kernels for CPUs without AVX2: SSE4.1, and the same work in
+//! AVX's VEX encoding. They read the pair-output8-v1 weights as stored.
 //! Both schedules fit x86-64's 16 vector registers; inspect actual machine code
 //! for spills (objdump of the release build). SSE and AVX1 bodies use only XMM
 //! integer arithmetic. AVX1 changes the encoding (VEX), not the integer width.
 use std::arch::x86_64::*;
-
-#[target_feature(enable = "avx,sse4.1")]
-pub(super) unsafe fn vex_legacy<const B: usize>(
-    out: &mut [f32],
-    w: &[i8],
-    sw: &[f32],
-    q: &[i16],
-    sx: &[f32],
-    rows: usize,
-    cols: usize,
-) {
-    use std::arch::x86_64::*;
-    for r in (0..rows).step_by(8) {
-        let wp = w.as_ptr().add(r * cols);
-        // Eight accumulators for B=4, not sixteen; the second half is a separate
-        // reduction. This keeps the SSE implementation within the register file.
-        for half in [0usize, 4] {
-            let mut a = [_mm_setzero_si128(); B];
-            let mut b = [_mm_setzero_si128(); B];
-            let mut j = 0;
-            while j + 4 <= cols {
-                let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
-                let w1 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add((j + 2) * 8 + half * 2).cast()));
-                for (k, acc) in a.iter_mut().enumerate() {
-                    let x = q.as_ptr().add(k * cols + j);
-                    let x0 = _mm_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
-                    let x1 = _mm_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
-                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
-                    b[k] = _mm_add_epi32(b[k], _mm_madd_epi16(w1, x1));
-                }
-                j += 4;
-            }
-            if j < cols {
-                let w0 = _mm_cvtepi8_epi16(_mm_loadl_epi64(wp.add(j * 8 + half * 2).cast()));
-                for (k, acc) in a.iter_mut().enumerate() {
-                    let x0 = _mm_set1_epi32(std::ptr::read_unaligned(
-                        q.as_ptr().add(k * cols + j).cast::<i32>(),
-                    ));
-                    *acc = _mm_add_epi32(*acc, _mm_madd_epi16(w0, x0));
-                }
-            }
-            let scales = _mm_loadu_ps(sw.as_ptr().add(r + half));
-            for k in 0..B {
-                let sums = _mm_cvtepi32_ps(_mm_add_epi32(a[k], b[k]));
-                let values = _mm_mul_ps(_mm_mul_ps(sums, scales), _mm_set1_ps(sx[k]));
-                _mm_storeu_ps(out.as_mut_ptr().add(k * rows + r + half), values);
-            }
-        }
-    }
-}
 
 // Each lane is a complete output. Independent output accumulators hide the
 // integer-add latency without two stripes and without rereading the input for

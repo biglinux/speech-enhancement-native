@@ -15,13 +15,7 @@ pub struct Matrix {
     storage: Storage,
     matvec4: Matvec4,
     packed_plan: crate::packed::Plan,
-    pair_plan: crate::packed::PairPlan,
-    #[cfg(feature = "r9-recurrent-cache")]
     recurrent_cache: Option<crate::weights::I16s>,
-    #[cfg(feature = "r10-batch-cache")]
-    batch_cache: Option<crate::weights::I16s>,
-    #[cfg(feature = "r10-batch-cache")]
-    batch_cache_plan: crate::packed::BatchCachePlan,
 }
 /// Dequantized batched GEMV over four contiguous vectors: writes
 /// `out[k*m + r] = sum_r(vector k) * scales[r] * sx[k]` for r in 0..m, k in 0..4.
@@ -55,11 +49,7 @@ impl Matrix {
                         Storage::Packed(q, scales)
                     }
                     "row-major-v1" => {
-                        if cfg!(all(
-                            feature = "packed-gru",
-                            not(feature = "scalar-reference")
-                        )) && rows % 8 == 0
-                            && cols % 2 == 0
+                        if cfg!(not(feature = "scalar-reference")) && rows % 8 == 0 && cols % 2 == 0
                         {
                             Storage::Packed(b.packed_i8s(&v["weight"], rows, cols)?, scales)
                         } else {
@@ -78,16 +68,9 @@ impl Matrix {
             storage,
             matvec4,
             packed_plan: crate::packed::Plan::select(),
-            pair_plan: crate::packed::PairPlan::select(),
-            #[cfg(feature = "r9-recurrent-cache")]
             recurrent_cache: None,
-            #[cfg(feature = "r10-batch-cache")]
-            batch_cache: None,
-            #[cfg(feature = "r10-batch-cache")]
-            batch_cache_plan: crate::packed::BatchCachePlan::select(),
         })
     }
-    #[cfg(feature = "r9-recurrent-cache")]
     pub(crate) fn enable_recurrent_cache(&mut self, b: &Bundle) -> Result<()> {
         #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
         if dfn_ops::simd_tier() == 3 && self.rows == 192 && self.cols == 64 {
@@ -98,19 +81,10 @@ impl Matrix {
         let _ = b;
         Ok(())
     }
-    #[cfg(feature = "r10-batch-cache")]
-    pub(crate) fn enable_batch_cache(&mut self, b: &Bundle) -> Result<()> {
-        if self.rows == 192 && self.cols == 64 && self.batch_cache_plan.available() {
-            if let Storage::Packed(w, _) = &self.storage {
-                self.batch_cache = Some(b.batch_i16_cache(w)?);
-            }
-        }
-        Ok(())
-    }
     pub fn apply(&self, x: &[f32], y: &mut [f32], q: &mut [i16]) {
         debug_assert_eq!(x.len(), self.cols);
         debug_assert_eq!(y.len(), self.rows);
-        #[cfg(all(target_arch = "x86_64", feature = "r9-recurrent-cache"))]
+        #[cfg(target_arch = "x86_64")]
         if let (Some(w), Storage::Packed(_, s)) = (&self.recurrent_cache, &self.storage) {
             let scale = dfn_ops::quantize_i16(x, &mut q[..self.cols]);
             crate::packed::cached_recurrent_one(y, w, s, &q[..self.cols], scale);
@@ -174,63 +148,10 @@ impl Matrix {
         }
     }
 
-    /// Two independent matrices sharing exactly the same already-quantized inputs.
-    /// Used only by the optional F/B schedule. Biases and all recurrent updates
-    /// remain outside this operation. Mixed/unpacked/scalar paths remain valid.
-    pub(crate) fn batch_pair_prequantized(
-        &self,
-        other: &Self,
-        q: &[i16],
-        sx: &[f32],
-        ya: &mut [f32],
-        yb: &mut [f32],
-        count: usize,
-    ) {
-        assert_eq!(self.rows, other.rows);
-        assert_eq!(self.cols, other.cols);
-        assert!(self.is_quantized() && other.is_quantized());
-        let (m, n) = (self.rows, self.cols);
-        assert_eq!(q.len(), count * n);
-        assert_eq!(sx.len(), count);
-        assert_eq!(ya.len(), count * m);
-        assert_eq!(yb.len(), count * m);
-        if let (Storage::Packed(wa, sa), Storage::Packed(wb, sb)) = (&self.storage, &other.storage)
-        {
-            if self.pair_plan.available() {
-                let mut p = 0;
-                while p + 4 <= count {
-                    self.pair_plan.apply(
-                        &mut ya[p * m..(p + 4) * m],
-                        &mut yb[p * m..(p + 4) * m],
-                        wa,
-                        wb,
-                        sa,
-                        sb,
-                        &q[p * n..(p + 4) * n],
-                        &sx[p..p + 4],
-                        m,
-                        n,
-                    );
-                    p += 4;
-                }
-                self.batch_prequantized(&q[p * n..], &sx[p..], &mut ya[p * m..], count - p);
-                other.batch_prequantized(&q[p * n..], &sx[p..], &mut yb[p * m..], count - p);
-                return;
-            }
-        }
-        self.batch_prequantized(q, sx, ya, count);
-        other.batch_prequantized(q, sx, yb, count);
-    }
-
     pub(crate) fn is_quantized(&self) -> bool {
         matches!(&self.storage, Storage::Quant(..) | Storage::Packed(..))
     }
     fn apply_quantized_four(&self, q: &[i16], sx: &[f32; 4], out: &mut [f32]) {
-        #[cfg(feature = "r10-batch-cache")]
-        if let (Some(w), Storage::Packed(_, s)) = (&self.batch_cache, &self.storage) {
-            self.batch_cache_plan.apply(out, w, s, q, sx);
-            return;
-        }
         match &self.storage {
             Storage::Quant(w, s) => (self.matvec4)(out, w, s, q, sx, self.rows, self.cols),
             Storage::Packed(w, s) => self
@@ -571,7 +492,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod round3_tests {
+mod batch_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};
     #[test]
@@ -618,10 +539,7 @@ mod round3_tests {
         let size = b.compatibility_packed_bytes();
         let _z = Matrix::load(&b, &v).unwrap();
         assert_eq!(size, b.compatibility_packed_bytes());
-        if cfg!(all(
-            feature = "packed-gru",
-            not(feature = "scalar-reference")
-        )) {
+        if cfg!(not(feature = "scalar-reference")) {
             assert_eq!(size, 192 * 64);
         } else {
             assert_eq!(size, 0);
@@ -630,42 +548,6 @@ mod round3_tests {
 }
 
 #[cfg(test)]
-mod round8_matrix_tests {
-    use super::*;
-    use crate::test_support::{assert_bits, Writer};
-    #[test]
-    fn paired_api_matches_two_calls_including_tail_and_empty_batch() {
-        for count in [0usize, 1, 3, 4, 5, 8, 40, 48] {
-            let mut w = Writer::new();
-            let a = w.matrix(192, 64, true);
-            let mut b = w.matrix(192, 64, true);
-            b["scales"] = w.floats(&vec![0.00037; 192]);
-            let blob = w.finish();
-            let a = Matrix::load(&blob, &a).unwrap();
-            let b = Matrix::load(&blob, &b).unwrap();
-            let x: Vec<f32> = (0..count * 64)
-                .map(|i| ((i * 151 % 331) as f32 - 165.0) * 0.01)
-                .collect();
-            let mut q = vec![0i16; count * 64];
-            let mut scales = vec![0.0; count];
-            for i in 0..count {
-                scales[i] =
-                    dfn_ops::quantize_i16(&x[i * 64..i * 64 + 64], &mut q[i * 64..i * 64 + 64]);
-            }
-            let mut ya = vec![0.0; count * 192];
-            let mut yb = ya.clone();
-            let mut ra = ya.clone();
-            let mut rb = ya.clone();
-            a.batch_pair_prequantized(&b, &q, &scales, &mut ya, &mut yb, count);
-            a.batch_prequantized(&q, &scales, &mut ra, count);
-            b.batch_prequantized(&q, &scales, &mut rb, count);
-            assert_bits(&ya, &ra);
-            assert_bits(&yb, &rb);
-        }
-    }
-}
-
-#[cfg(all(test, feature = "r9-recurrent-cache"))]
 mod cache_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};

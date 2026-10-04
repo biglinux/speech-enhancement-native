@@ -10,11 +10,10 @@ use std::os::raw::{c_char, c_ulong, c_void};
 use std::ptr;
 use std::sync::{Arc, OnceLock};
 
-/// The embedded weight blob, 64-byte aligned under r11-align64 (otherwise 4) so the engine can view
+/// The embedded weight blob, 64-byte aligned so the engine can view
 /// its f32 tensors in place (zero-copy) instead of parsing a second heap copy.
 #[repr(C)]
-#[cfg_attr(feature = "r11-align64", repr(align(64)))]
-#[cfg_attr(not(feature = "r11-align64"), repr(align(4)))]
+#[repr(align(64))]
 struct AlignedBlob<const N: usize>([u8; N]);
 static WEIGHTS: AlignedBlob<
     { include_bytes!(concat!(env!("OUT_DIR"), "/embedded_weights.bin")).len() },
@@ -585,16 +584,11 @@ static DESCRIPTOR: Descriptor = Descriptor {
 };
 
 /// LADSPA host entry point.
-#[cfg_attr(not(feature = "r11-probe"), no_mangle)]
+#[no_mangle]
 pub extern "C" fn ladspa_descriptor(index: c_ulong) -> *const Descriptor {
     if index == 0 {
         &DESCRIPTOR
     } else {
         ptr::null()
     }
-}
-
-#[cfg(feature = "r11-probe")]
-pub(crate) fn probe_weight_bytes() -> &'static [u8] {
-    &WEIGHTS.0
 }

@@ -60,14 +60,7 @@ impl Activation {
 pub struct Linear {
     pub input: usize,
     pub output: usize,
-    #[cfg_attr(
-        all(feature = "r10-linear-plan", not(feature = "scalar-reference")),
-        allow(dead_code)
-    )]
     groups: usize,
-    #[cfg(feature = "r10-linear-plan")]
-    #[cfg_attr(feature = "scalar-reference", allow(dead_code))]
-    plan: dfn_ops::GroupedLinearPlan,
     w: F32s,
     b: F32s,
     act: Activation,
@@ -93,9 +86,6 @@ impl Linear {
             input,
             output,
             groups,
-            #[cfg(feature = "r10-linear-plan")]
-            plan: dfn_ops::GroupedLinearPlan::new(groups, input / groups, output / groups)
-                .ok_or("invalid linear plan")?,
             w,
             b: bias,
             act: Activation::load(v)?,
@@ -104,13 +94,9 @@ impl Linear {
     pub fn apply(&self, x: &[f32], y: &mut [f32]) {
         debug_assert_eq!(x.len(), self.input);
         debug_assert_eq!(y.len(), self.output);
-        #[cfg(any(not(feature = "r10-linear-plan"), feature = "scalar-reference"))]
         let ip = self.input / self.groups;
-        #[cfg(any(not(feature = "r10-linear-plan"), feature = "scalar-reference"))]
         let op = self.output / self.groups;
-        #[cfg(all(feature = "r10-linear-plan", not(feature = "scalar-reference")))]
-        self.plan.apply(y, x, &self.w);
-        #[cfg(all(not(feature = "r10-linear-plan"), not(feature = "scalar-reference")))]
+        #[cfg(not(feature = "scalar-reference"))]
         dfn_ops::grouped_linear(y, x, &self.w, self.groups, ip, op);
         #[cfg(feature = "scalar-reference")]
         for g in 0..self.groups {
@@ -258,14 +244,15 @@ impl Conv {
     fn apply(&self, x: View<'_>, out: &mut [f32], of: usize, spacing: usize, offset: usize) {
         debug_assert_eq!(x.c, self.ci);
         debug_assert_eq!(x.t, self.kt);
-        #[cfg(all(feature = "specialized-conv", not(feature = "scalar-reference")))]
+        #[cfg(not(feature = "scalar-reference"))]
         if let Some(kernel) = self.fast {
             kernel(self, x, out, of, spacing, offset);
             return;
         }
         self.apply_legacy(x, out, of, spacing, offset);
     }
-    /// Preserved round-2 implementation; used by baseline builds and bitwise tests.
+    /// The generic convolution: shapes without a specialized kernel, scalar-reference
+    /// builds, and the reference the specialized kernels are tested against.
     fn apply_legacy(&self, x: View<'_>, out: &mut [f32], of: usize, spacing: usize, offset: usize) {
         let ip = self.ci / self.groups;
         let op = self.co / self.groups;
@@ -563,7 +550,6 @@ pub struct DprnnBlock {
     ln_intra: LayerNorm,
     ln_inter: LayerNorm,
     proj: Vec<f32>,
-    proj_backward: Vec<f32>,
     rh: Vec<f32>,
     q: Vec<i16>,
     shared_q: Vec<i16>,
@@ -577,30 +563,13 @@ pub struct DprnnBlock {
 }
 impl DprnnBlock {
     pub fn load(b: &Bundle, v: &Value, f: usize, c: usize) -> Result<Self> {
-        let forward = GruWeights::load(b, &v["forward"])?;
-        let backward = GruWeights::load(b, &v["backward"])?;
+        let mut forward = GruWeights::load(b, &v["forward"])?;
+        let mut backward = GruWeights::load(b, &v["backward"])?;
         let temporal = GruWeights::load(b, &v["temporal"])?;
         // Cache only the two small, frequently reused spectral recurrent matrices.
         // Do not expand input/temporal/large GRU weights or change the disk bundle.
-        #[cfg(feature = "r9-recurrent-cache")]
-        let (forward, backward) = {
-            let mut forward = forward;
-            let mut backward = backward;
-            forward.recurrent.enable_recurrent_cache(b)?;
-            backward.recurrent.enable_recurrent_cache(b)?;
-            (forward, backward)
-        };
-        // R10: only the three Wx and temporal Rh, used with four inputs.
-        // +4*24 KiB/block; R9 spectral Rh remains separate and unchanged.
-        #[cfg(feature = "r10-batch-cache")]
-        let (forward, backward, temporal) = {
-            let (mut forward, mut backward, mut temporal) = (forward, backward, temporal);
-            forward.input.enable_batch_cache(b)?;
-            backward.input.enable_batch_cache(b)?;
-            temporal.input.enable_batch_cache(b)?;
-            temporal.recurrent.enable_batch_cache(b)?;
-            (forward, backward, temporal)
-        };
+        forward.recurrent.enable_recurrent_cache(b)?;
+        backward.recurrent.enable_recurrent_cache(b)?;
         for g in [&forward, &backward, &temporal] {
             require(
                 g.hidden == c && g.input.cols == c,
@@ -616,11 +585,6 @@ impl DprnnBlock {
                 && fc_inter.output == c,
             "DPRNN FC mismatch",
         )?;
-        let pair_scratch = cfg!(all(
-            feature = "r8-fb-pair",
-            not(feature = "scalar-reference")
-        )) && forward.input.is_quantized()
-            && backward.input.is_quantized();
         Ok(Self {
             f,
             c,
@@ -632,11 +596,6 @@ impl DprnnBlock {
             ln_intra: LayerNorm::load(b, &v["ln_intra"], c)?,
             ln_inter: LayerNorm::load(b, &v["ln_inter"], c)?,
             proj: vec![0.0; f * 3 * c],
-            proj_backward: if pair_scratch {
-                vec![0.0; f * 3 * c]
-            } else {
-                Vec::new()
-            },
             rh: vec![0.0; 4 * 3 * c],
             q: vec![0; 4 * c],
             shared_q: vec![0; f * c],
@@ -650,16 +609,13 @@ impl DprnnBlock {
         })
     }
     pub(crate) fn forward(&mut self, x: &[f32]) -> &[f32] {
-        if cfg!(all(
-            feature = "dprnn-exact",
-            not(feature = "scalar-reference")
-        )) {
+        if cfg!(not(feature = "scalar-reference")) {
             self.forward_exact(x)
         } else {
             self.forward_legacy(x)
         }
     }
-    /// Round-2 schedule retained for diagnostic builds and unit-test comparison.
+    /// The plain schedule: scalar-reference builds, and the reference in tests.
     fn forward_legacy(&mut self, x: &[f32]) -> &[f32] {
         let c = self.c;
         let gates = 3 * c;
@@ -736,11 +692,6 @@ impl DprnnBlock {
         self.hf.fill(0.0);
         self.hb.fill(0.0);
         let shared = self.forward.input.is_quantized() && self.backward.input.is_quantized();
-        let paired = shared
-            && cfg!(all(
-                feature = "r8-fb-pair",
-                not(feature = "scalar-reference")
-            ));
         if shared {
             for f in 0..self.f {
                 self.shared_scales[f] = dfn_ops::quantize_i16(
@@ -748,23 +699,12 @@ impl DprnnBlock {
                     &mut self.shared_q[f * c..(f + 1) * c],
                 );
             }
-            if paired {
-                self.forward.input.batch_pair_prequantized(
-                    &self.backward.input,
-                    &self.shared_q,
-                    &self.shared_scales,
-                    &mut self.proj,
-                    &mut self.proj_backward,
-                    self.f,
-                );
-            } else {
-                self.forward.input.batch_prequantized(
-                    &self.shared_q,
-                    &self.shared_scales,
-                    &mut self.proj,
-                    self.f,
-                );
-            }
+            self.forward.input.batch_prequantized(
+                &self.shared_q,
+                &self.shared_scales,
+                &mut self.proj,
+                self.f,
+            );
         } else {
             self.forward
                 .input
@@ -787,9 +727,7 @@ impl DprnnBlock {
             );
             self.intra[f * 2 * c..f * 2 * c + c].copy_from_slice(&self.hf);
         }
-        if paired {
-            // Already computed, before the first spectral recurrent update.
-        } else if shared {
+        if shared {
             self.backward.input.batch_prequantized(
                 &self.shared_q,
                 &self.shared_scales,
@@ -809,13 +747,8 @@ impl DprnnBlock {
                     .recurrent
                     .apply(&self.hb, &mut self.rh[..gates], &mut self.q);
             }
-            let projection = if paired {
-                &self.proj_backward
-            } else {
-                &self.proj
-            };
             self.backward.update(
-                &projection[f * gates..(f + 1) * gates],
+                &self.proj[f * gates..(f + 1) * gates],
                 &self.rh[..gates],
                 &mut self.hb,
             );
@@ -936,11 +869,11 @@ impl Dprnn {
 }
 
 #[cfg(test)]
-mod round3_tests {
+mod conv_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};
     #[test]
-    fn specialized_convolutions_match_round2_on_this_isa() {
+    fn specialized_convolutions_match_the_generic_path() {
         // Includes both input boundaries, all circular-buffer start positions,
         // interleaved output spacing and activations after the complete sum.
         for (ci, co, kt, kf, groups) in [
@@ -1017,11 +950,11 @@ mod round3_tests {
 }
 
 #[cfg(test)]
-mod r9_tests {
+mod conv_shape_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};
     #[test]
-    fn first_and_affine_shapes_match_legacy_for_strides_and_boundaries() {
+    fn specialized_shapes_match_the_generic_path_for_strides_and_boundaries() {
         for (ci, co, kt, kf, groups) in [(1, 64, 3, 3, 1), (2, 64, 3, 3, 2), (64, 64, 1, 1, 64)] {
             for nf in [3usize, 4, 7, 17, 48, 480] {
                 for stride in [1usize, 2, 3] {

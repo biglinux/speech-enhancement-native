@@ -1,4 +1,5 @@
-//! R8 register-blocked FP32 matvec; preserves per-column reduction order.
+//! Register-blocked f32 matvec over wide output tiles, ported from dpdfnet-ops;
+//! every output keeps its per-column reduction order.
 use std::arch::x86_64::*;
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn matvec_avx(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {

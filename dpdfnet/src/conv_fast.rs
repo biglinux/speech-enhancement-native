@@ -3,16 +3,13 @@
 //! Preserve the previous per-output reduction order and its FMA policy:
 //! wide first convolutions use FMA only on tier 3; op=5 and depthwise never do.
 use super::{Conv, View};
-#[cfg(all(
-    target_arch = "x86_64",
-    any(feature = "r9-first-unroll", feature = "r9-affine-epilogue")
-))]
-#[path = "conv_round9.rs"]
-mod round9;
+#[cfg(target_arch = "x86_64")]
+#[path = "conv_affine.rs"]
+mod affine;
 pub(super) type Kernel = fn(&Conv, View<'_>, &mut [f32], usize, usize, usize);
 
 pub(super) fn select(c: &Conv) -> Option<Kernel> {
-    if cfg!(feature = "scalar-reference") || !cfg!(feature = "specialized-conv") {
+    if cfg!(feature = "scalar-reference") {
         return None;
     }
     // Keep the already register-blocked dense 1x1 and depthwise 1x3 paths intact.
@@ -20,10 +17,6 @@ pub(super) fn select(c: &Conv) -> Option<Kernel> {
     {
         let tier = dfn_ops::simd_tier();
         if c.kt == 3 && c.kf == 3 && c.ci == c.groups && c.co == 64 && matches!(c.ci, 1 | 2) {
-            #[cfg(feature = "r9-first-unroll")]
-            if tier == 3 {
-                return Some(round9::first_checked);
-            }
             return match tier {
                 3 => Some(first_fma_checked),
                 2 => Some(first_avx_checked),
@@ -38,12 +31,11 @@ pub(super) fn select(c: &Conv) -> Option<Kernel> {
             return if tier > 0 { Some(df5_checked) } else { None };
         }
         if c.kt == 1 && c.kf == 1 && c.groups == c.ci && c.ci == c.co {
-            #[cfg(feature = "r9-affine-epilogue")]
             if tier >= 2
                 && c.co == 64
                 && matches!(c.act, super::Activation::None | super::Activation::Relu)
             {
-                return Some(round9::affine_checked);
+                return Some(affine::affine_checked);
             }
             return if tier >= 2 {
                 Some(affine_avx_checked)
@@ -357,11 +349,7 @@ wrapper!(affine_sse_checked, affine_sse);
 /// (original immutable weights remain shared). No bundle/schema change.
 /// The three padding lanes do not become model channels.
 pub(super) fn prepare_df5(c: &Conv) -> Option<crate::weights::F32s> {
-    #[cfg(all(
-        feature = "oldcpu-df5-avx",
-        target_arch = "x86_64",
-        not(feature = "scalar-reference")
-    ))]
+    #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
     if dfn_ops::simd_tier() == 2
         && c.kt == 5
         && c.kf == 1

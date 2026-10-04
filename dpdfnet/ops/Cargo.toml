@@ -9,16 +9,7 @@ description = "int8/SIMD numeric kernels for the DPDFNet engine (diverged copy o
 libc = "0.2"
 
 [features]
-default = []
+# Diagnostics: cap the SIMD tier the project kernels select at run time, to
+# compare tiers on one machine. Never enabled by a package build.
 force-sse41 = []
 force-avx1 = []
-oldcpu-exp-bits = []
-oldcpu-rational-gates = []
-
-r8-matvec-wide = []
-r8-amax = []
-
-r9-grouped-fusion = []
-
-r10-quant-pack = []
-r10-linear-plan = []

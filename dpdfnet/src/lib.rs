@@ -1,5 +1,7 @@
 //! Specialized streaming DPDFNet 48 kHz HR executor. No neural-network runtime.
 //! Python is used exclusively by the offline exporter and reference tests.
+// scalar-reference builds keep the SIMD kernels compiled but never call them.
+#![cfg_attr(feature = "scalar-reference", allow(dead_code))]
 pub mod audio;
 mod ffi;
 pub mod kernels;

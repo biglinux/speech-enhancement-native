@@ -12,10 +12,7 @@
 mod ladspa;
 mod weights;
 
-#[cfg(feature = "r11-packed")]
 use dfn_ops::gru_cell_packed as active_gru;
-#[cfg(not(feature = "r11-packed"))]
-use dfn_ops::gru_cell_q as active_gru;
 use dfn_ops::*;
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};

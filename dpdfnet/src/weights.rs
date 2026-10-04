@@ -2,25 +2,6 @@
 //! Parsing, hashing, allocation and Arc cloning occur only during construction.
 use serde_json::Value;
 
-// Diagnostic only: counters are compiled out of every performance candidate.
-#[cfg(feature = "r10-weight-audit")]
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "r10-weight-audit")]
-static I8_RESOLUTIONS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "r10-weight-audit")]
-static F32_RESOLUTIONS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "r10-weight-audit")]
-static I16_RESOLUTIONS: AtomicU64 = AtomicU64::new(0);
-/// Construction-call counters. Read outside the callback, never reset globally.
-#[cfg(feature = "r10-weight-audit")]
-pub fn resolution_counts() -> [u64; 3] {
-    [
-        I8_RESOLUTIONS.load(Ordering::Relaxed),
-        F32_RESOLUTIONS.load(Ordering::Relaxed),
-        I16_RESOLUTIONS.load(Ordering::Relaxed),
-    ]
-}
-
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -102,12 +83,10 @@ impl AlignedBlob {
 }
 #[derive(Clone)]
 pub struct F32s {
-    #[cfg_attr(feature = "r10-resolved-weights", allow(dead_code))]
+    // Owns the allocation `ptr` points into; never read.
+    #[allow(dead_code)]
     blob: Arc<AlignedBlob>,
-    #[cfg_attr(feature = "r10-resolved-weights", allow(dead_code))]
-    offset: usize,
     len: usize,
-    #[cfg(feature = "r10-resolved-weights")]
     ptr: *const f32,
 }
 impl F32s {
@@ -125,9 +104,7 @@ impl F32s {
 // access is provided; Deref ties its borrow to &self. Constructors
 // validate alignment/ranges, including empty slices. Only these owning types get
 // Send/Sync, not a general raw pointer wrapper.
-#[cfg(feature = "r10-resolved-weights")]
 unsafe impl Send for F32s {}
-#[cfg(feature = "r10-resolved-weights")]
 unsafe impl Sync for F32s {}
 impl F32s {
     fn view(blob: Arc<AlignedBlob>, offset: usize, len: usize) -> Self {
@@ -136,40 +113,16 @@ impl F32s {
             .checked_mul(std::mem::size_of::<f32>())
             .and_then(|n| offset.checked_add(n))
             .is_some_and(|end| end <= blob.bytes));
-        #[cfg(feature = "r10-resolved-weights")]
         let ptr = unsafe { blob.words.as_ptr().cast::<u8>().add(offset).cast::<f32>() };
-        Self {
-            blob,
-            offset,
-            len,
-            #[cfg(feature = "r10-resolved-weights")]
-            ptr,
-        }
+        Self { blob, len, ptr }
     }
 }
 impl Deref for F32s {
     type Target = [f32];
-    #[cfg_attr(feature = "r10-resolved-weights", inline(always))]
+    #[inline(always)]
     fn deref(&self) -> &[f32] {
-        #[cfg(feature = "r10-resolved-weights")]
-        {
-            // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
-        #[cfg(not(feature = "r10-resolved-weights"))]
-        // SAFETY: checked length, alignment, little-endian platform and finite values at load.
-        // Shared allocation is immutable and kept alive by this Arc.
-        unsafe {
-            std::slice::from_raw_parts(
-                self.blob
-                    .words
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(self.offset)
-                    .cast(),
-                self.len,
-            )
-        }
+        // SAFETY: view() and owning-type invariants above; not a 'static borrow.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 #[derive(Clone)]
@@ -177,7 +130,6 @@ pub struct I8s {
     blob: Arc<AlignedBlob>,
     offset: usize,
     len: usize,
-    #[cfg(feature = "r10-resolved-weights")]
     ptr: *const i8,
 }
 // SAFETY: the private pointer always refers into this view's immutable Arc-owned
@@ -185,9 +137,7 @@ pub struct I8s {
 // access is provided; Deref ties its borrow to &self. Constructors
 // validate alignment/ranges, including empty slices. Only these owning types get
 // Send/Sync, not a general raw pointer wrapper.
-#[cfg(feature = "r10-resolved-weights")]
 unsafe impl Send for I8s {}
-#[cfg(feature = "r10-resolved-weights")]
 unsafe impl Sync for I8s {}
 impl I8s {
     fn view(blob: Arc<AlignedBlob>, offset: usize, len: usize) -> Self {
@@ -196,90 +146,47 @@ impl I8s {
             .checked_mul(std::mem::size_of::<i8>())
             .and_then(|n| offset.checked_add(n))
             .is_some_and(|end| end <= blob.bytes));
-        #[cfg(feature = "r10-resolved-weights")]
         let ptr = unsafe { blob.words.as_ptr().cast::<u8>().add(offset).cast::<i8>() };
         Self {
             blob,
             offset,
             len,
-            #[cfg(feature = "r10-resolved-weights")]
             ptr,
         }
     }
 }
 impl Deref for I8s {
     type Target = [i8];
-    #[cfg_attr(feature = "r10-resolved-weights", inline(always))]
+    #[inline(always)]
     fn deref(&self) -> &[i8] {
-        #[cfg(feature = "r10-resolved-weights")]
-        {
-            // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
-        #[cfg(not(feature = "r10-resolved-weights"))]
-        // SAFETY: range was validated; every byte is a valid i8.
-        unsafe {
-            std::slice::from_raw_parts(
-                self.blob
-                    .words
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(self.offset)
-                    .cast(),
-                self.len,
-            )
-        }
+        // SAFETY: view() and owning-type invariants above; not a 'static borrow.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 /// Exact sign-extended cache view; no dequantization or changed scales.
-#[cfg(any(feature = "r9-recurrent-cache", feature = "r10-batch-cache"))]
 #[derive(Clone)]
 pub(crate) struct I16s {
-    // Retained even with a resolved pointer: owns the readable allocation.
+    // Owns the allocation `ptr` points into; never read.
     #[allow(dead_code)]
     blob: Arc<AlignedBlob>,
     len: usize,
-    #[cfg(feature = "r10-resolved-weights")]
     ptr: *const i16,
 }
-#[cfg(any(feature = "r9-recurrent-cache", feature = "r10-batch-cache"))]
 impl I16s {
     fn view(blob: Arc<AlignedBlob>, len: usize) -> Self {
         assert!(len.checked_mul(2).is_some_and(|n| n <= blob.bytes));
-        #[cfg(feature = "r10-resolved-weights")]
         let ptr = blob.words.as_ptr().cast::<i16>();
-        Self {
-            blob,
-            len,
-            #[cfg(feature = "r10-resolved-weights")]
-            ptr,
-        }
+        Self { blob, len, ptr }
     }
 }
 // SAFETY: same immutable Arc-owned pointer invariants as F32s/I8s above.
-#[cfg(all(
-    feature = "r10-resolved-weights",
-    any(feature = "r9-recurrent-cache", feature = "r10-batch-cache")
-))]
 unsafe impl Send for I16s {}
-#[cfg(all(
-    feature = "r10-resolved-weights",
-    any(feature = "r9-recurrent-cache", feature = "r10-batch-cache")
-))]
 unsafe impl Sync for I16s {}
-#[cfg(any(feature = "r9-recurrent-cache", feature = "r10-batch-cache"))]
 impl Deref for I16s {
     type Target = [i16];
-    #[cfg_attr(feature = "r10-resolved-weights", inline(always))]
+    #[inline(always)]
     fn deref(&self) -> &[i16] {
-        #[cfg(feature = "r10-resolved-weights")]
-        {
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
-        #[cfg(not(feature = "r10-resolved-weights"))]
-        unsafe {
-            std::slice::from_raw_parts(self.blob.words.as_ptr().cast(), self.len)
-        }
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 
@@ -292,10 +199,7 @@ pub struct Bundle {
     // Initialization-only cache for schema-1 compatibility. Prepacked schema-2
     // bundles use the main blob directly and leave this cache empty.
     packed: Mutex<HashMap<(usize, usize, usize), I8s>>,
-    #[cfg(feature = "r9-recurrent-cache")]
     recurrent: Mutex<HashMap<(usize, usize, usize), I16s>>,
-    #[cfg(feature = "r10-batch-cache")]
-    batch_cache: Mutex<HashMap<(usize, usize, usize), I16s>>,
 }
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -362,16 +266,10 @@ impl Bundle {
             manifest_json: compact.into_boxed_slice(),
             blob: Arc::new(AlignedBlob::new(bytes)),
             packed: Mutex::new(HashMap::new()),
-            #[cfg(feature = "r9-recurrent-cache")]
             recurrent: Mutex::new(HashMap::new()),
-            #[cfg(feature = "r10-batch-cache")]
-            batch_cache: Mutex::new(HashMap::new()),
         }))
     }
-    #[cfg(feature = "r9-recurrent-cache")]
     pub(crate) fn recurrent_cache(&self, w: &I8s) -> Result<I16s> {
-        #[cfg(feature = "r10-weight-audit")]
-        I16_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
         require(
             w.len() == 192 * 64,
             "recurrent cache is restricted to 192x64",
@@ -395,60 +293,12 @@ impl Bundle {
         cache.insert(key, out.clone());
         Ok(out)
     }
-    /// Initialization only. 3 Wx + temporal Rh per DPRNN block, 192x64 only.
-    /// At most 2 branches * 8 blocks * 4 matrices = 64 entries. R9 spectral Rh
-    /// caches are separate and are not duplicated here. This is NOT a new format.
-    #[cfg(feature = "r10-batch-cache")]
-    pub(crate) fn batch_i16_cache(&self, w: &I8s) -> Result<I16s> {
-        #[cfg(feature = "r10-weight-audit")]
-        I16_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
-        require(w.len() == 192 * 64, "batch cache restricted to 192x64")?;
-        let key = (Arc::as_ptr(&w.blob) as usize, w.offset, w.len);
-        let mut cache = self
-            .batch_cache
-            .lock()
-            .map_err(|_| "batch cache poisoned")?;
-        if let Some(value) = cache.get(&key) {
-            return Ok(value.clone());
-        }
-        require(cache.len() < 64, "too many small batch caches")?;
-        let values: Vec<i16> = w.iter().map(|&v| i16::from(v)).collect();
-        // SAFETY: initialized i16 bytes are copied into a new aligned allocation.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len() * 2) };
-        let value = I16s::view(Arc::new(AlignedBlob::new(bytes)), values.len());
-        cache.insert(key, value.clone());
-        Ok(value)
-    }
-    /// Diagnostics/init only: takes a mutex. NEVER call in process/forward.
-    pub fn derived_batch_bytes(&self) -> usize {
-        #[cfg(feature = "r10-batch-cache")]
-        {
-            return self
-                .batch_cache
-                .lock()
-                .map(|m| m.values().map(|v| v.len * 2).sum())
-                .unwrap_or(0);
-        }
-        #[cfg(not(feature = "r10-batch-cache"))]
-        {
-            0
-        }
-    }
-
     /// Diagnostics only: locks initialization cache; NEVER call from process().
     pub fn derived_recurrent_bytes(&self) -> usize {
-        #[cfg(feature = "r9-recurrent-cache")]
-        {
-            self.recurrent
-                .lock()
-                .map(|m| m.values().map(|v| v.len * 2).sum())
-                .unwrap_or(0)
-        }
-        #[cfg(not(feature = "r9-recurrent-cache"))]
-        {
-            0
-        }
+        self.recurrent
+            .lock()
+            .map(|m| m.values().map(|v| v.len * 2).sum())
+            .unwrap_or(0)
     }
     /// Initialization/diagnostics only. Never called by a process/forward method.
     pub fn manifest(&self) -> Result<Value> {
@@ -475,8 +325,6 @@ impl Bundle {
         Ok((offset, len))
     }
     pub fn f32s(&self, v: &Value, expected: usize) -> Result<F32s> {
-        #[cfg(feature = "r10-weight-audit")]
-        F32_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
         let (offset, len) = self.range(v, "f32", 4)?;
         require(len == expected, "f32 tensor shape mismatch")?;
         let a = F32s::view(self.blob.clone(), offset, len);
@@ -484,8 +332,6 @@ impl Bundle {
         Ok(a)
     }
     pub fn i8s(&self, v: &Value, expected: usize) -> Result<I8s> {
-        #[cfg(feature = "r10-weight-audit")]
-        I8_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
         let (offset, len) = self.range(v, "i8", 1)?;
         require(len == expected, "i8 tensor shape mismatch")?;
         let a = I8s::view(self.blob.clone(), offset, len);
@@ -585,7 +431,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod round10_tests {
+mod view_tests {
     use super::*;
     #[test]
     fn owned_views_survive_move_clone_and_cross_thread_drop() {
@@ -620,34 +466,5 @@ mod round10_tests {
         let q = I8s::view(blob, 65, 17);
         assert_eq!(q.len(), 17);
         assert_eq!(q[16], 0);
-    }
-    #[cfg(feature = "r10-batch-cache")]
-    #[test]
-    fn batch_cache_is_exact_shared_and_survives_bundle_drop() {
-        let bytes: Vec<u8> = (0..192 * 64)
-            .map(|i| ((i % 255) as i16 - 127) as i8 as u8)
-            .collect();
-        let m = serde_json::json!({"schema":2,"architecture":"dpdfnet-48hr-v1", "weight_bytes":bytes.len(),
-          "weights_sha256":format!("{:x}",Sha256::digest(&bytes))});
-        let b = Bundle::from_bytes(&serde_json::to_vec(&m).unwrap(), &bytes).unwrap();
-        let q = b
-            .i8s(
-                &serde_json::json!({"dtype":"i8","offset":0,"len":bytes.len()}),
-                bytes.len(),
-            )
-            .unwrap();
-        let a = b.batch_i16_cache(&q).unwrap();
-        let a2 = b.batch_i16_cache(&q).unwrap();
-        assert_eq!(a.as_ptr(), a2.as_ptr());
-        assert_eq!(b.derived_batch_bytes(), 24576);
-        for (&x, &y) in a.iter().zip(q.iter()) {
-            assert_eq!(x, i16::from(y));
-        }
-        drop(b);
-        drop(q);
-        drop(a);
-        std::thread::spawn(move || assert_eq!(a2[0], -127))
-            .join()
-            .unwrap();
     }
 }

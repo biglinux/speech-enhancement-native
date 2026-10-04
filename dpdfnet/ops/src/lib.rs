@@ -532,24 +532,8 @@ fn abs_max(x: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         match simd_tier() {
-            2 | 3 => {
-                return unsafe {
-                    if cfg!(feature = "r8-amax") {
-                        round8::amax_avx(x)
-                    } else {
-                        abs_max_avx(x)
-                    }
-                }
-            }
-            1 => {
-                return unsafe {
-                    if cfg!(feature = "r8-amax") {
-                        round8::amax_sse(x)
-                    } else {
-                        abs_max_sse(x)
-                    }
-                }
-            }
+            2 | 3 => return unsafe { abs_max_avx(x) },
+            1 => return unsafe { abs_max_sse(x) },
             _ => {}
         }
     }
@@ -563,16 +547,10 @@ fn quantize_round(x: &[f32], out: &mut [i16], inv: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         match simd_tier() {
-            #[cfg(feature = "r10-quant-pack")]
-            3 => return unsafe { round10::quantize_avx2(x, out, inv) },
-            #[cfg(not(feature = "r10-quant-pack"))]
-            3 => return unsafe { quantize_round_avx(x, out, inv) },
+            3 => return unsafe { quantize::quantize_avx2(x, out, inv) },
             2 => return unsafe { quantize_round_avx(x, out, inv) },
             1 => {
-                #[cfg(feature = "r10-quant-pack")]
-                return unsafe { round10::quantize_sse(x, out, inv) };
-                #[cfg(not(feature = "r10-quant-pack"))]
-                return unsafe { quantize_round_sse(x, out, inv) };
+                return unsafe { quantize::quantize_sse(x, out, inv) };
             }
             _ => {}
         }
@@ -785,7 +763,6 @@ unsafe fn exp8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
     p = step(p, 0.5);
     p = step(p, 1.0);
     p = step(p, 1.0);
-    #[cfg(feature = "oldcpu-exp-bits")]
     let pow2 = {
         // r is integral and in [-126,127]. (r+127)*2^23 is exactly representable
         // as f32 AND in positive i32 range. CVTTPS2DQ exists in AVX1 at 256 bits.
@@ -796,14 +773,6 @@ unsafe fn exp8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
             _mm256_set1_ps(8_388_608.0),
         ));
         _mm256_castsi256_ps(bits)
-    };
-    #[cfg(not(feature = "oldcpu-exp-bits"))]
-    let pow2 = {
-        let ri = _mm256_cvtps_epi32(r);
-        let bias = _mm_set1_epi32(127);
-        let lo = _mm_slli_epi32::<23>(_mm_add_epi32(_mm256_castsi256_si128(ri), bias));
-        let hi = _mm_slli_epi32::<23>(_mm_add_epi32(_mm256_extractf128_si256::<1>(ri), bias));
-        _mm256_set_m128(_mm_castsi128_ps(hi), _mm_castsi128_ps(lo))
     };
     _mm256_mul_ps(p, pow2)
 }
@@ -1079,8 +1048,8 @@ pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
             3 => {
                 // SAFETY: tier 3 means AVX2+FMA is present.
                 unsafe {
-                    if cfg!(feature = "r8-matvec-wide") && n >= 64 {
-                        round8::matvec_avx2(y, a, x, m, n);
+                    if n >= 64 {
+                        matvec_wide::matvec_avx2(y, a, x, m, n);
                     } else {
                         matvec_t_avx2(y, a, x, m, n);
                     }
@@ -1090,8 +1059,8 @@ pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
             2 => {
                 // SAFETY: tier 2 means AVX is present.
                 unsafe {
-                    if cfg!(feature = "r8-matvec-wide") && n >= 64 {
-                        round8::matvec_avx(y, a, x, m, n);
+                    if n >= 64 {
+                        matvec_wide::matvec_avx(y, a, x, m, n);
                     } else {
                         matvec_t_avx(y, a, x, m, n);
                     }
@@ -1101,8 +1070,8 @@ pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
             1 => {
                 // SAFETY: tier 1 means SSE4.1 is present (SSE is a subset).
                 unsafe {
-                    if cfg!(feature = "r8-matvec-wide") && n >= 32 {
-                        round8::matvec_sse(y, a, x, m, n);
+                    if n >= 32 {
+                        matvec_wide::matvec_sse(y, a, x, m, n);
                     } else {
                         matvec_t_sse(y, a, x, m, n);
                     }
@@ -1244,16 +1213,6 @@ pub fn grouped_linear(
     in_pg: usize,
     out_pg: usize,
 ) {
-    #[cfg(all(target_arch = "x86_64", feature = "r9-grouped-fusion"))]
-    if simd_tier() == 3 && matches!(out_pg, 8 | 16 | 32) && groups >= 2 {
-        let ni = groups.checked_mul(in_pg).expect("grouped input overflow");
-        let no = groups.checked_mul(out_pg).expect("grouped output overflow");
-        let nw = ni.checked_mul(out_pg).expect("grouped weights overflow");
-        assert!(x.len() >= ni && y.len() >= no && w.len() >= nw);
-        // SAFETY: validated slices; tier 3 requires AVX2 and FMA.
-        unsafe { round9::grouped(y, x, w, groups, in_pg, out_pg) };
-        return;
-    }
     for g in 0..groups {
         let xg = &x[g * in_pg..g * in_pg + in_pg];
         let wg = &w[g * in_pg * out_pg..g * in_pg * out_pg + in_pg * out_pg];
@@ -2243,10 +2202,6 @@ mod safe_boundary_tests {
 pub fn gru_update(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32]) {
     let hs = h.len();
     assert!(wx.len() >= 3 * hs && rh.len() >= 3 * hs && b.len() >= 6 * hs);
-    #[cfg(all(feature = "oldcpu-rational-gates", target_arch = "x86_64"))]
-    if oldcpu_rational::try_update(h, wx, rh, b) {
-        return;
-    }
     #[cfg(target_arch = "x86_64")]
     if simd_tier() >= 2 && hs.is_multiple_of(8) {
         unsafe { gate8(h, wx, rh, b, hs) };
@@ -2285,20 +2240,10 @@ mod dpdfnet_quantizer_edges {
     }
 }
 
-#[cfg(all(feature = "oldcpu-rational-gates", target_arch = "x86_64"))]
-mod oldcpu_rational;
-
 #[cfg(all(test, target_arch = "x86_64"))]
-mod oldcpu_tests;
+mod exp8_tests;
 
 #[cfg(target_arch = "x86_64")]
-#[path = "round8.rs"]
-mod round8;
+mod matvec_wide;
 
-#[cfg(all(target_arch = "x86_64", any(feature = "r9-grouped-fusion", test)))]
-mod round9;
-
-#[cfg(any(feature = "r10-quant-pack", feature = "r10-linear-plan"))]
-mod round10;
-#[cfg(feature = "r10-linear-plan")]
-pub use round10::GroupedLinearPlan;
+mod quantize;

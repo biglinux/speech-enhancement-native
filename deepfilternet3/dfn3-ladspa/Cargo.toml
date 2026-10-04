@@ -14,15 +14,7 @@ realfft = "3"
 dfn-ops = { path = "../../ops" }
 
 [features]
-default = ["r11-core"]
-r11-packed = ["dfn-ops/r11-packed", "r11-align64"]
-r11-quant = ["dfn-ops/r11-quant"]
-r11-matvec = ["dfn-ops/r11-matvec"]
-r11-align64 = []
-r11-exp-bits = ["dfn-ops/r11-exp-bits"]
-r11-zr-schedule = ["dfn-ops/r11-zr-schedule"]
-r11-core = ["r11-packed", "r11-quant", "r11-matvec", "r11-align64"]
-# Probe instrumentation is not part of production. Same hooks in the frozen control.
-r11-probe = []
+# Diagnostics: cap the SIMD tier the project kernels select at run time, to
+# compare tiers on one machine. Never enabled by a package build.
 force-sse41 = ["dfn-ops/force-sse41"]
 force-avx1 = ["dfn-ops/force-avx1"]

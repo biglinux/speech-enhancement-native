@@ -1,7 +1,7 @@
-//! Standalone, single-thread diagnostic copied UNCHANGED into the frozen control.
+//! Single-thread diagnostics for the DPDFNet engine: render, oracle comparison,
+//! capture and benchmarks, run on the target machine itself.
 //! No Python/NumPy/perf/compiler is required to run this executable on the i3.
 //! Benchmark entry sets FTZ/DAZ just like the deployed C/LADSPA entry points.
-#![allow(unexpected_cfgs)]
 use dpdfnet_native::{AudioProcessor, Bundle, BINS};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -113,7 +113,7 @@ fn environment() -> Value {
         "scalar"
     } else if avx2 && !cfg!(feature = "force-sse41") && !cfg!(feature = "force-avx1") {
         "avx2"
-    } else if sse && avx && cfg!(feature = "oldcpu-vex128") && !cfg!(feature = "force-sse41") {
+    } else if sse && avx && !cfg!(feature = "force-sse41") {
         "vex128"
     } else if sse {
         "sse41"
@@ -123,64 +123,8 @@ fn environment() -> Value {
     json!({"cpu":brand,"flags":flags,"avx":avx,"avx2":avx2,"fma":fma,"sse41":sse,
         "project_fp_tier":tier,"packed_integer_backend":integer,
         "dependency_dispatch_unforced":true,"mxcsr":ftz_daz(),
-        "rational_active":cfg!(feature="oldcpu-rational-gates") && (tier==1||tier==2) && !cfg!(feature="scalar-reference"),
-        "features":{"packed_gru":cfg!(feature="packed-gru"),"specialized_conv":cfg!(feature="specialized-conv"),"dprnn_exact":cfg!(feature="dprnn-exact"),
-        "int_tiles":cfg!(feature="oldcpu-int-tiles"),"vex128":cfg!(feature="oldcpu-vex128"),"exp_bits":cfg!(feature="oldcpu-exp-bits"),
-        "df5_avx":cfg!(feature="oldcpu-df5-avx"),"rational_gates":cfg!(feature="oldcpu-rational-gates"),
-        "scalar_reference":cfg!(feature="scalar-reference"),"force_avx1":cfg!(feature="force-avx1"),"force_sse41":cfg!(feature="force-sse41"),
-        "r8_packed_tiles":cfg!(feature="r8-packed-tiles"),"r8_fb_pair":cfg!(feature="r8-fb-pair"),
-        "r8_sse_prebroadcast":cfg!(feature="r8-sse-prebroadcast"),"r8_matvec_wide":cfg!(feature="r8-matvec-wide"),
-        "r8_amax":cfg!(feature="r8-amax"),
-        "r9_packed_k4":cfg!(feature="r9-packed-k4"),"r9_recurrent_cache":cfg!(feature="r9-recurrent-cache"),
-        "r9_grouped_fusion":cfg!(feature="r9-grouped-fusion"),"r9_first_unroll":cfg!(feature="r9-first-unroll"),
-        "r9_affine_epilogue":cfg!(feature="r9-affine-epilogue"),
-        "r10_resolved_weights":cfg!(feature="r10-resolved-weights"),
-        "r10_batch_cache":cfg!(feature="r10-batch-cache"),
-        "r10_avx2_prebroadcast":cfg!(feature="r10-avx2-prebroadcast"),
-        "r10_quant_pack":cfg!(feature="r10-quant-pack"),
-        "r10_linear_plan":cfg!(feature="r10-linear-plan"),
-        "r10_weight_audit":cfg!(feature="r10-weight-audit")},
-        "r10_metadata": r10_metadata()})
-}
-fn r10_metadata() -> Value {
-    #[cfg(feature = "r10-linear-plan")]
-    let linear_plan = std::mem::size_of::<dfn_ops::GroupedLinearPlan>();
-    #[cfg(not(feature = "r10-linear-plan"))]
-    let linear_plan = 0usize;
-    json!({"f32_view_bytes":std::mem::size_of::<dpdfnet_native::weights::F32s>(),
-      "i8_view_bytes":std::mem::size_of::<dpdfnet_native::weights::I8s>(),
-      "linear_plan_bytes_per_linear":linear_plan,
-      "diagnostic_only":cfg!(feature="r10-weight-audit"),
-      "avx2_prebroadcast_stack_bytes":if cfg!(feature="r10-avx2-prebroadcast"){4096}else{0}})
-}
-
-#[cfg(feature = "r10-weight-audit")]
-fn weight_audit(bundle: &str) -> Result<Value, String> {
-    let before = dpdfnet_native::weights::resolution_counts();
-    let b = Bundle::open(bundle)?;
-    let mut p = AudioProcessor::new(b.clone())?;
-    let loaded = dpdfnet_native::weights::resolution_counts();
-    let samples = synthetic(48000 * 3);
-    let mut out = [0.0f32; 960];
-    for block in samples.chunks(960) {
-        ftz_daz();
-        p.process(block, &mut out[..block.len()]);
-    }
-    p.reset();
-    for block in samples.chunks(7) {
-        ftz_daz();
-        p.process(block, &mut out[..block.len()]);
-    }
-    let end = dpdfnet_native::weights::resolution_counts();
-    let delta = |a: [u64; 3], b: [u64; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let hot = delta(loaded, end);
-    Ok(
-        json!({"passed":hot==[0,0,0]&&!p.faulted()&&p.sanitized_samples==0,
-      "environment":environment(),"counter_order":["Bundle::i8s","Bundle::f32s","i16 cache access"],
-      "construction_calls":delta(before,loaded),"process_and_reset_calls":hot,
-      "derived_recurrent_bytes":b.derived_recurrent_bytes(),"derived_batch_bytes":b.derived_batch_bytes(),
-      "not_a_benchmark":true,"scope":"counts construction APIs; no attribution claim about perf symbols or Deref cost"}),
-    )
+        "diagnostics":{"scalar_reference":cfg!(feature = "scalar-reference"),
+            "force_avx1":cfg!(feature = "force-avx1"),"force_sse41":cfg!(feature = "force-sse41")}})
 }
 
 fn next(s: &mut u32) -> f32 {
@@ -281,14 +225,7 @@ fn bench(
         .and_then(Value::as_str)
         .ok_or("missing weight hash")?
         .to_owned();
-    #[cfg(feature = "r9-recurrent-cache")]
     let derived_recurrent_bytes = b.derived_recurrent_bytes();
-    #[cfg(not(feature = "r9-recurrent-cache"))]
-    let derived_recurrent_bytes = 0usize;
-    #[cfg(feature = "r10-batch-cache")]
-    let derived_batch_bytes = b.derived_batch_bytes();
-    #[cfg(not(feature = "r10-batch-cache"))]
-    let derived_batch_bytes = 0usize;
 
     // Two audio seconds warm BOTH signal and recurrence. Samples include silence later.
     for block in samples[..samples.len().min(96000)].chunks(quantum) {
@@ -346,8 +283,8 @@ fn bench(
         "work_rtf":work/secs as f64,"wall_rtf":elapsed/secs as f64,"thread_cpu_rtf":cpu/secs as f64,
         "callback_us":percentile(&mut times),"callback_budget_us":quantum as f64/48000.0*1e6,
         "deadline_misses":misses,"late_starts_over_100us":late_starts,"checksum":checksum,"input_sha256":hash,"input_kind":if input=="-" {"synthetic"} else {"recording"},
-        "weights_bytes":b.weight_bytes(),"weights_sha256":weights_hash,"derived_recurrent_bytes":derived_recurrent_bytes,"derived_batch_bytes":derived_batch_bytes,
-        "diagnostic_only":cfg!(feature="r10-weight-audit"),"note":"No realtime scheduling acquired here. Paced includes scheduler interference; throughput is not live PipeWire certification."}),
+        "weights_bytes":b.weight_bytes(),"weights_sha256":weights_hash,"derived_recurrent_bytes":derived_recurrent_bytes,
+        "note":"No realtime scheduling acquired here. Paced includes scheduler interference; throughput is not live PipeWire certification."}),
     )
 }
 fn capture(bundle: &str, dir: &Path, frames: usize) -> Result<Value, String> {
@@ -724,7 +661,7 @@ fn oracle(bundle: &str, dir: &Path) -> Result<Value, String> {
     Ok(
         json!({"passed":first.is_null(),"first_failure":first,"layers":layers,"frames":frames,"atol":5e-4,"rtol":5e-4,
       "environment":environment(),"reference":"independent W8A16 oracle exported on build host","weights_sha256":meta["weights_sha256"],
-      "quality_approved":false,"note":"No inherited-failure waiver. Reference generated once; candidate evolves its own recurrent state."}),
+      "note":"Per-layer agreement with the exported oracle, not a listening test. The oracle runs once; this build evolves its own recurrent state."}),
     )
 }
 
@@ -837,7 +774,7 @@ fn render(bundle: &str, input: &Path, dir: &Path, db: f32) -> Result<Value, Stri
         let in_hash = format!("{:x}", input_hash.finalize());
         let mut wav =
             BufWriter::new(File::create(dir.join("audio.wav.partial")).map_err(|e| e.to_string())?);
-        // Float32 WAVE: same latency/gain/duration as native control; no dithering.
+        // Float32 WAVE: same latency, gain and duration as the plugin; no dithering.
         let mut header = Vec::with_capacity(44);
         header.extend_from_slice(b"RIFF");
         header.extend_from_slice(&((meta.len() + 36) as u32).to_le_bytes());
@@ -901,8 +838,6 @@ fn go() -> Result<Value, String> {
     ftz_daz();
     match a.get(1).map(String::as_str) {
         Some("info")=>Ok(environment()),
-        #[cfg(feature="r10-weight-audit")]
-        Some("weight-audit") if a.len()==3=>weight_audit(&a[2]),
         Some("render") if (5..=6).contains(&a.len()) =>render(&a[2],Path::new(&a[3]),Path::new(&a[4]),
             a.get(5).map_or(Ok(100.0),|s|s.parse::<f32>().map_err(|e|e.to_string()))?),
         Some("selftest")=>integer_selftest(),
@@ -914,7 +849,7 @@ fn go() -> Result<Value, String> {
             bench(&a[2],parse(a.get(3),30)?,parse(a.get(4),960)?,a.get(5).map_or("-",String::as_str),mode=="paced")
         },
         Some("micro") if (3..=4).contains(&a.len()) =>micro(&a[2],parse(a.get(3),1000)?),
-        _=>Err("usage: oldcpu_probe weight-audit BUNDLE (audit build only) | render BUNDLE INPUT_F32 NEW_DIR [DB] | info | selftest | oracle BUNDLE GOLDEN_DIR | capture BUNDLE NEW_DIR [FRAMES] | bench BUNDLE [SECONDS] [QUANTUM] [RAW_F32_OR_-] [throughput|paced] | micro BUNDLE [ITERS]".into())
+        _=>Err("usage: oldcpu_probe render BUNDLE INPUT_F32 NEW_DIR [DB] | info | selftest | oracle BUNDLE GOLDEN_DIR | capture BUNDLE NEW_DIR [FRAMES] | bench BUNDLE [SECONDS] [QUANTUM] [RAW_F32_OR_-] [throughput|paced] | micro BUNDLE [ITERS]".into())
     }
 }
 fn main() {
