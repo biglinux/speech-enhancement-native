@@ -107,9 +107,7 @@ unsafe extern "C" fn instantiate(_: *const Descriptor, rate: c_ulong) -> *mut c_
         return std::ptr::null_mut();
     }
     let result = catch_unwind(AssertUnwindSafe(|| -> Option<*mut c_void> {
-        let dir = std::env::var_os("DPDFNET_NATIVE_MODEL")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| "/usr/share/dpdfnet-native/dpdfnet2_48khz_hr-w8a16".into());
+        let dir = Bundle::default_dir();
         let mut cache = CACHE.lock().ok()?;
         let b = cache
             .as_ref()

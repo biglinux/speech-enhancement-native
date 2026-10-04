@@ -27,7 +27,7 @@ check() {
     export DPDFNET_TEST_MODEL="${PWD}/dpdfnet/model/dpdfnet2_48khz_hr-w8a16"
     cargo test --frozen --release --workspace --exclude dpdfnet-native
     cargo test --frozen --profile release-unwind -p dpdfnet-native
-    cargo test --frozen --profile release-unwind -p dpdfnet-native --test runtime -- --ignored
+    cargo test --frozen --profile release-unwind -p dpdfnet-native --test runtime --test offline -- --ignored
 }
 
 _licenses() {
@@ -56,12 +56,13 @@ package_deepfilternet3-native() {
 }
 
 package_dpdfnet-native() {
-    pkgdesc='DPDFNet-2 48 kHz HR noise suppression, native int8/SIMD Rust engine (LADSPA plugin)'
+    pkgdesc='DPDFNet-2 48 kHz HR noise suppression, native int8/SIMD Rust engine (LADSPA plugin and multithreaded file tool)'
     license=('MIT OR Apache-2.0' 'Apache-2.0')
     depends=('libgcc' 'glibc')
 
     cd "${srcdir}/${pkgbase}" || return
     install -Dm755 target/release-unwind/libdpdfnet_native.so "${pkgdir}/usr/lib/ladspa/libdpdfnet_native.so"
+    install -Dm755 target/release-unwind/dpdfnet-enhance "${pkgdir}/usr/bin/dpdfnet-enhance"
     install -Dm644 -t "${pkgdir}/usr/share/dpdfnet-native/dpdfnet2_48khz_hr-w8a16" \
         dpdfnet/model/dpdfnet2_48khz_hr-w8a16/{manifest.json,packing.json,weights.bin}
     _licenses

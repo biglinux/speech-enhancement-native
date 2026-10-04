@@ -6,6 +6,7 @@ pub mod kernels;
 mod ladspa;
 pub mod layers;
 pub mod model;
+pub mod offline;
 mod packed;
 pub mod weights;
 pub use audio::AudioProcessor;

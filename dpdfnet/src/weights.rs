@@ -313,6 +313,13 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(data)
 }
 impl Bundle {
+    /// `DPDFNET_NATIVE_MODEL`, else the packaged bundle.
+    pub fn default_dir() -> std::path::PathBuf {
+        std::env::var_os("DPDFNET_NATIVE_MODEL").map_or_else(
+            || "/usr/share/dpdfnet-native/dpdfnet2_48khz_hr-w8a16".into(),
+            Into::into,
+        )
+    }
     pub fn open(dir: impl AsRef<Path>) -> Result<Arc<Self>> {
         let dir = dir.as_ref();
         // Bound external data before allocating. These are model-only, not generic tensor files.

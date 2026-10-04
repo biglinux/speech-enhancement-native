@@ -18,6 +18,7 @@ integers, so their result does not depend on the tier.
 | | DeepFilterNet3-LL, larger model, no lookahead | `/usr/lib/ladspa/libdfn3ll_ladspa.so` | `deep_filter_net3_ll_rs_mono` |
 | | Lookahead peak limiter | `/usr/lib/ladspa/liblimiter_ladspa.so` | `biglinux_lookahead_limiter_mono` |
 | `dpdfnet-native` | DPDFNet-2 48 kHz HR noise suppression | `/usr/lib/ladspa/libdpdfnet_native.so` | `dpdfnet_native_48hr` |
+| | The same model over whole files, on several threads ([how](docs/dpdfnet.md#whole-recordings)) | `/usr/bin/dpdfnet-enhance` | |
 | `gtcrn-aec-native` | GTCRN-AEC echo cancellation | `/usr/lib/spa-0.2/aec/libspa-aec-gtcrn.so` | `library.name = aec/libspa-aec-gtcrn` |
 
 All plugins take 48 kHz mono and accept any host block size.
@@ -46,7 +47,7 @@ export AEC_GTCRN_GGUF=$PWD/gtcrn-aec/model/localvqe-pi-aec-v1-49k-f32.gguf
 export DPDFNET_TEST_MODEL=$PWD/dpdfnet/model/dpdfnet2_48khz_hr-w8a16
 cargo test --release --locked --workspace --exclude dpdfnet-native
 cargo test --locked --profile release-unwind -p dpdfnet-native
-cargo test --locked --profile release-unwind -p dpdfnet-native --test runtime -- --ignored
+cargo test --locked --profile release-unwind -p dpdfnet-native --test runtime --test offline -- --ignored
 ```
 
 `pkgbuild/PKGBUILD` builds the three packages the same way.

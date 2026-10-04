@@ -1,4 +1,4 @@
-//! Shape-specialized layers. All tensors use [time,frequency,channel] internally.
+//! Shape-specialized layers. All tensors use `[time, frequency, channel]` internally.
 //! No transposes, tensor concatenations or heap operations in forward methods.
 use crate::{
     kernels::{GruWeights, LayerNorm},
@@ -649,7 +649,7 @@ impl DprnnBlock {
             out: vec![0.0; f * c],
         })
     }
-    fn forward(&mut self, x: &[f32]) -> &[f32] {
+    pub(crate) fn forward(&mut self, x: &[f32]) -> &[f32] {
         if cfg!(all(
             feature = "dprnn-exact",
             not(feature = "scalar-reference")
@@ -902,6 +902,9 @@ impl Dprnn {
         for b in &mut self.blocks {
             b.reset();
         }
+    }
+    pub(crate) fn into_blocks(self) -> Vec<DprnnBlock> {
+        self.blocks
     }
 }
 

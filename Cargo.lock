@@ -96,6 +96,7 @@ name = "dpdfnet-native"
 version = "0.1.0"
 dependencies = [
  "dpdfnet-ops",
+ "libc",
  "realfft",
  "serde_json",
  "sha2",

@@ -143,7 +143,7 @@ impl Matrix {
             }
         }
     }
-    /// Contiguous [frequency,channel] vectors. Only 4*cols i16 scratch is needed.
+    /// Contiguous `[frequency, channel]` vectors. Only 4*cols i16 scratch is needed.
     /// Each 16-byte weight load serves four independent vectors on AVX2.
     pub fn batch(&self, x: &[f32], y: &mut [f32], count: usize, q: &mut [i16]) {
         debug_assert_eq!(x.len(), count * self.cols);

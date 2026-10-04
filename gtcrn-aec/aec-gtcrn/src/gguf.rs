@@ -1,6 +1,6 @@
 //! Bounded F32 GGUF reader. Parsing and aligned allocation happen at model load,
 //! never in the audio callback. Tensor values are owned f32 storage: alignment
-//! of Vec<u8> is not a Rust guarantee, even when file offsets are aligned.
+//! of `Vec<u8>` is not a Rust guarantee, even when file offsets are aligned.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};

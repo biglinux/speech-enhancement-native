@@ -26,18 +26,129 @@ pub(crate) fn flush_denormals() {
         }
     }
 }
-pub struct AudioProcessor {
-    pub model: Model,
+/// Windowed FFT of the newest hop over the one before it.
+pub(crate) struct Analysis {
     fft: Arc<dyn RealToComplex<f32>>,
-    ifft: Arc<dyn ComplexToReal<f32>>,
-    fft_scratch: Vec<Complex32>,
-    ifft_scratch: Vec<Complex32>,
-    history: Vec<f32>,
+    scratch: Vec<Complex32>,
     window: Vec<f32>,
+    history: Vec<f32>,
     real: Vec<f32>,
     complex: Vec<Complex32>,
     spectrum: Vec<f32>,
+}
+impl Analysis {
+    fn new(window: &[f32]) -> Result<Self> {
+        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT);
+        let mut s = Self {
+            scratch: fft.make_scratch_vec(),
+            fft,
+            window: window.to_vec(),
+            history: vec![0.0; FFT],
+            real: vec![0.0; FFT],
+            complex: vec![Complex32::new(0.0, 0.0); BINS],
+            spectrum: vec![0.0; BINS * 2],
+        };
+        // Prefault scratch + exercise FFT dispatch during initialization, outside the callback.
+        s.fft
+            .process_with_scratch(&mut s.real, &mut s.complex, &mut s.scratch)
+            .map_err(|e| e.to_string())?;
+        s.real.fill(0.0);
+        s.complex.fill(Complex32::new(0.0, 0.0));
+        Ok(s)
+    }
+    /// The interleaved spectrum, or `None` if the transform failed.
+    pub(crate) fn run(&mut self, hop: &[f32]) -> Option<&[f32]> {
+        self.history.copy_within(HOP..FFT, 0);
+        self.history[HOP..].copy_from_slice(hop);
+        for ((r, &x), &w) in self.real.iter_mut().zip(&self.history).zip(&self.window) {
+            *r = x * w;
+        }
+        self.fft
+            .process_with_scratch(&mut self.real, &mut self.complex, &mut self.scratch)
+            .ok()?;
+        for (o, c) in self
+            .spectrum
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(&self.complex)
+        {
+            o[0] = c.re;
+            o[1] = c.im;
+        }
+        Some(&self.spectrum)
+    }
+}
+
+/// Inverse FFT and overlap-add of one enhanced spectrum.
+pub(crate) struct Synthesis {
+    ifft: Arc<dyn ComplexToReal<f32>>,
+    scratch: Vec<Complex32>,
+    window: Vec<f32>,
+    real: Vec<f32>,
+    complex: Vec<Complex32>,
     ola: Vec<f32>,
+}
+impl Synthesis {
+    fn new(window: &[f32]) -> Result<Self> {
+        let ifft = RealFftPlanner::<f32>::new().plan_fft_inverse(FFT);
+        let mut s = Self {
+            scratch: ifft.make_scratch_vec(),
+            ifft,
+            window: window.to_vec(),
+            real: vec![0.0; FFT],
+            complex: vec![Complex32::new(0.0, 0.0); BINS],
+            ola: vec![0.0; FFT],
+        };
+        s.ifft
+            .process_with_scratch(&mut s.complex, &mut s.real, &mut s.scratch)
+            .map_err(|e| e.to_string())?;
+        s.real.fill(0.0);
+        s.complex.fill(Complex32::new(0.0, 0.0));
+        Ok(s)
+    }
+    /// Writes the next output hop; false if the transform failed or the result is not finite.
+    pub(crate) fn run(&mut self, spec: &[f32], hop: &mut [f32]) -> bool {
+        for (o, x) in self.complex.iter_mut().zip(spec.as_chunks::<2>().0) {
+            o.re = x[0];
+            o.im = x[1];
+        }
+        // Real inverse transform requires real-valued DC and Nyquist bins.
+        self.complex[0].im = 0.0;
+        self.complex[BINS - 1].im = 0.0;
+        if self
+            .ifft
+            .process_with_scratch(&mut self.complex, &mut self.real, &mut self.scratch)
+            .is_err()
+        {
+            return false;
+        }
+        for ((o, &r), &w) in self.ola.iter_mut().zip(&self.real).zip(&self.window) {
+            *o += r * w / FFT as f32;
+            if !o.is_finite() {
+                return false;
+            }
+        }
+        hop.copy_from_slice(&self.ola[..HOP]);
+        self.ola.copy_within(HOP..FFT, 0);
+        self.ola[HOP..].fill(0.0);
+        true
+    }
+}
+
+/// Input as the plugin takes it: non-finite samples become 0, huge ones are bounded.
+pub(crate) fn bounded_input(x: f32) -> f32 {
+    if x.is_finite() {
+        x.clamp(-1e6, 1e6)
+    } else {
+        0.0
+    }
+}
+
+pub struct AudioProcessor {
+    pub model: Model,
+    analysis: Analysis,
+    synthesis: Synthesis,
     pending_in: Vec<f32>,
     pending_out: Vec<f32>,
     position: usize,
@@ -52,24 +163,14 @@ pub struct AudioProcessor {
 impl AudioProcessor {
     pub fn new(bundle: Arc<Bundle>) -> Result<Self> {
         let model = Model::new(bundle)?;
-        let mut planner = RealFftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(FFT);
-        let ifft = planner.plan_fft_inverse(FFT);
-        let fft_scratch = fft.make_scratch_vec();
-        let ifft_scratch = ifft.make_scratch_vec();
-        let window = model.window.to_vec();
-        let mut s = Self {
+        let analysis = Analysis::new(&model.window)?;
+        let synthesis = Synthesis::new(&model.window)?;
+        // Resolve the dB conversion's libm path outside a future control-change callback.
+        let _ = std::hint::black_box(dfn_ops::atten_lim_from_db(std::hint::black_box(12.0)));
+        Ok(Self {
             model,
-            fft,
-            ifft,
-            fft_scratch,
-            ifft_scratch,
-            history: vec![0.0; FFT],
-            window,
-            real: vec![0.0; FFT],
-            complex: vec![Complex32::new(0.0, 0.0); BINS],
-            spectrum: vec![0.0; BINS * 2],
-            ola: vec![0.0; FFT],
+            analysis,
+            synthesis,
             pending_in: vec![0.0; HOP],
             pending_out: vec![0.0; HOP],
             position: 0,
@@ -80,19 +181,12 @@ impl AudioProcessor {
             fault: false,
             hops: 0,
             sanitized_samples: 0,
-        };
-        // Prefault scratch + exercise FFT dispatch during initialization, outside the callback.
-        s.fft
-            .process_with_scratch(&mut s.real, &mut s.complex, &mut s.fft_scratch)
-            .map_err(|e| e.to_string())?;
-        s.ifft
-            .process_with_scratch(&mut s.complex, &mut s.real, &mut s.ifft_scratch)
-            .map_err(|e| e.to_string())?;
-        s.real.fill(0.0);
-        s.complex.fill(Complex32::new(0.0, 0.0));
-        // Resolve the dB conversion's libm path outside a future control-change callback.
-        let _ = std::hint::black_box(dfn_ops::atten_lim_from_db(std::hint::black_box(12.0)));
-        Ok(s)
+        })
+    }
+    /// The parts of a processor fresh from `reset`, for the offline pipeline.
+    /// The dry mix stays constant while the control does not change.
+    pub(crate) fn into_parts(self) -> (Analysis, Model, Synthesis, f32) {
+        (self.analysis, self.model, self.synthesis, self.dry_mix)
     }
     /// dB range 0..100, non-finite => full enhancement. Ramped over at most five hops.
     pub fn set_attenuation_db(&mut self, db: f32) {
@@ -108,8 +202,8 @@ impl AudioProcessor {
     }
     pub fn reset(&mut self) {
         self.model.reset();
-        self.history.fill(0.0);
-        self.ola.fill(0.0);
+        self.analysis.history.fill(0.0);
+        self.synthesis.ola.fill(0.0);
         self.pending_in.fill(0.0);
         self.pending_out.fill(0.0);
         self.position = 0;
@@ -124,14 +218,11 @@ impl AudioProcessor {
     /// One sample in/out is intentional: block partition invariance without queues or growth paths.
     #[inline]
     pub fn sample(&mut self, x: f32) -> f32 {
-        let x = if x.is_finite() {
-            x.clamp(-1e6, 1e6)
-        } else {
+        if !x.is_finite() {
             self.sanitized_samples = self.sanitized_samples.saturating_add(1);
-            0.0
-        };
+        }
         let y = self.pending_out[self.position];
-        self.pending_in[self.position] = x;
+        self.pending_in[self.position] = bounded_input(x);
         self.position += 1;
         if self.position == HOP {
             self.position = 0;
@@ -153,68 +244,21 @@ impl AudioProcessor {
         }
     }
     fn process_hop(&mut self) {
+        if !self.fault {
+            self.fault = !self.enhance_hop();
+        }
         if self.fault {
             self.pending_out.fill(0.0);
-            return;
+        } else {
+            self.hops = self.hops.saturating_add(1);
         }
-        self.history.copy_within(HOP..FFT, 0);
-        self.history[HOP..].copy_from_slice(&self.pending_in);
-        for ((r, &x), &w) in self.real.iter_mut().zip(&self.history).zip(&self.window) {
-            *r = x * w;
-        }
-        if self
-            .fft
-            .process_with_scratch(&mut self.real, &mut self.complex, &mut self.fft_scratch)
-            .is_err()
-        {
-            self.fault = true;
-            self.pending_out.fill(0.0);
-            return;
-        }
-        for (o, c) in self
-            .spectrum
-            .as_chunks_mut::<2>()
-            .0
-            .iter_mut()
-            .zip(&self.complex)
-        {
-            o[0] = c.re;
-            o[1] = c.im;
-        }
+    }
+    fn enhance_hop(&mut self) -> bool {
+        let Some(spectrum) = self.analysis.run(&self.pending_in) else {
+            return false;
+        };
         self.dry_mix += (self.target_mix - self.dry_mix).clamp(-self.mix_step, self.mix_step);
-        let spec = self.model.process_spectrum(&self.spectrum, self.dry_mix);
-        if spec.iter().any(|v| !v.is_finite()) {
-            self.fault = true;
-            self.pending_out.fill(0.0);
-            return;
-        }
-        for (o, x) in self.complex.iter_mut().zip(spec.as_chunks::<2>().0) {
-            o.re = x[0];
-            o.im = x[1];
-        }
-        // Real inverse transform requires real-valued DC and Nyquist bins.
-        self.complex[0].im = 0.0;
-        self.complex[BINS - 1].im = 0.0;
-        if self
-            .ifft
-            .process_with_scratch(&mut self.complex, &mut self.real, &mut self.ifft_scratch)
-            .is_err()
-        {
-            self.fault = true;
-            self.pending_out.fill(0.0);
-            return;
-        }
-        for ((o, &r), &w) in self.ola.iter_mut().zip(&self.real).zip(&self.window) {
-            *o += r * w / FFT as f32;
-            if !o.is_finite() {
-                self.fault = true;
-                self.pending_out.fill(0.0);
-                return;
-            }
-        }
-        self.pending_out.copy_from_slice(&self.ola[..HOP]);
-        self.ola.copy_within(HOP..FFT, 0);
-        self.ola[HOP..].fill(0.0);
-        self.hops = self.hops.saturating_add(1);
+        let spec = self.model.process_spectrum(spectrum, self.dry_mix);
+        !spec.iter().any(|v| !v.is_finite()) && self.synthesis.run(spec, &mut self.pending_out)
     }
 }

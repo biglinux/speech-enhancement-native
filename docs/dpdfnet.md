@@ -134,6 +134,48 @@ instantiate and cleanup. State and scratch buffers belong to each instance. The
 plugin does not change the host's floating-point environment. Warm-up touches
 the buffers and resolves the SIMD dispatch before the first `run`.
 
+## Whole recordings
+
+`dpdfnet-enhance` (`src/offline.rs`) enhances a file on several threads for the
+converters; live audio keeps the LADSPA plugin. It reads interleaved f32 48 kHz
+frames on stdin and writes the same number of frames on stdout, already aligned:
+the 2880-sample latency is removed.
+
+```sh
+ffmpeg -i in.m4a -ar 48000 -f f32le - |
+    dpdfnet-enhance --channels 2 --attenuation 48 |
+    ffmpeg -f f32le -ar 48000 -ac 2 -i - out.flac
+```
+
+Each channel runs through the network as a pipeline. `Model::into_stages`
+splits it into stages that keep only their own state: the features and input
+convolutions, each DPRNN block, the encoder GRU with the deep-filter decoder,
+and the two halves of the mask decoder with the final filter. While a later
+stage works on hop t an earlier one already works on hop t+1, and every stage
+does the same arithmetic in the same order as `process_spectrum`. So the output
+is bit-identical to the plugin, preceded by its opening half second played
+backwards as in the converters, for any length and any thread count.
+
+Stage threads are pinned, one per physical core, fastest cores first. Left to
+the scheduler, stages that sleep between hops often share the two hyperthreads
+of one core and run at about half speed: 2.5 s instead of 1.2 s for a minute
+of mono on the i5-13400. The default thread count is the number of cores of
+the fastest kind; more threads land on E-cores or hyperthreads and are slower.
+
+| | LADSPA | `dpdfnet-enhance` |
+|---|---:|---:|
+| i5-13400, 1 min stereo | 7.8 s | 1.6 s (6 threads) |
+| i5-13400, 5 min stereo | 37.6 s | 7.9 s |
+| i5-13400, 5 min mono | 19.7 s | 5.4 s |
+| i3-2375M, 1 min stereo | 53.3 s | 28.0 s (2 threads) |
+| i3-2375M, 1 min mono | 26.6 s | 15.4 s |
+
+With 6 stage threads the slowest group is the front with the first ERB block,
+159 µs a hop against 106 µs for a perfect split; finer stages would need the
+DPRNN blocks cut into their spectral and temporal halves. Memory stays near
+13 MB mono and 18 MB stereo whatever the length. A processing fault is an
+error, never silence.
+
 ## Model bundle
 
 `dpdfnet/model/dpdfnet2_48khz_hr-w8a16/` holds `manifest.json` (shapes,
