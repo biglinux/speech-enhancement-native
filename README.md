@@ -4,11 +4,12 @@ Native Rust inference engines for published speech-enhancement models, built as
 LADSPA and PipeWire plugins for BigLinux.
 
 The models come from their authors: DeepFilterNet3 (Schröter et al.), DPDFNet
-(Ceva) and GTCRN-AEC (LocalVQE). This repository reimplements their inference
-path without ONNX Runtime, OpenVINO or PyTorch. Recurrent weights are int8 with
-int16 activations (W8A16), and the kernels are chosen at runtime for the CPU:
-scalar, SSE4.1, AVX or AVX2+FMA. The int8 matrix products accumulate exactly in
-integers, so their result does not depend on the tier.
+(Ceva), GTCRN-AEC (LocalVQE) and Silero VAD (Silero Team). This repository
+reimplements their inference path without ONNX Runtime, OpenVINO or PyTorch.
+Recurrent weights are int8 with int16 activations (W8A16), and the kernels are
+chosen at runtime for the CPU: scalar, SSE4.1, AVX or AVX2+FMA. The int8 matrix
+products accumulate exactly in integers, so their result does not depend on the
+tier.
 
 ## Packages
 
@@ -21,7 +22,10 @@ integers, so their result does not depend on the tier.
 | | The same model over whole files, on several threads ([how](docs/dpdfnet.md#whole-recordings)) | `/usr/bin/dpdfnet-enhance` | |
 | `gtcrn-aec-native` | GTCRN-AEC echo cancellation | `/usr/lib/spa-0.2/aec/libspa-aec-gtcrn.so` | `library.name = aec/libspa-aec-gtcrn` |
 
-All plugins take 48 kHz mono and accept any host block size.
+All plugins take 48 kHz mono and accept any host block size. Both DeepFilterNet3
+plugins include a Silero voice gate that mutes the output while nobody speaks.
+It is on by default and raises the latency of both engines to 66 ms, from 40 ms
+for DeepFilterNet3 and 20 ms for DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
 
 ## CPU cost
 
@@ -34,6 +38,7 @@ CPU seconds per minute of audio, one core, measured with `perf stat`
 | DeepFilterNet3-LL | 2.1 | 15.2 |
 | DPDFNet-2 48 kHz HR | 3.9 | 27.3 |
 | GTCRN-AEC (16 kHz core) | 1.2 | 7.2 |
+| Voice gate, added to either DeepFilterNet3 engine | 0.07 | 0.44 |
 
 ## Build
 
@@ -43,24 +48,26 @@ Rust 1.98.1 or newer (`rust-toolchain.toml`).
 cargo build --release --locked --workspace --exclude dpdfnet-native
 cargo build --locked --profile release-unwind -p dpdfnet-native
 
-export AEC_GTCRN_GGUF=$PWD/gtcrn-aec/model/localvqe-pi-aec-v1-49k-f32.gguf
-export DPDFNET_TEST_MODEL=$PWD/dpdfnet/model/dpdfnet2_48khz_hr-w8a16
 cargo test --release --locked --workspace --exclude dpdfnet-native
 cargo test --locked --profile release-unwind -p dpdfnet-native
-cargo test --locked --profile release-unwind -p dpdfnet-native --test runtime --test offline -- --ignored
 ```
+
+The tests use the models in the repository.
 
 `pkgbuild/PKGBUILD` builds the three packages the same way.
 
 ## Layout
 
 ```text
-ops/              int8/SIMD kernels shared by DeepFilterNet3 and GTCRN-AEC
-deepfilternet3/   DeepFilterNet3 and -LL engines, CLIs, benchmarks, weight quantizer
+ops/              int8/SIMD kernels and resampler shared by the engines
+deepfilternet3/   DeepFilterNet3 and -LL engines, their shared LADSPA plugin crate,
+                  CLIs and benchmark, weight quantizer
+silero-vad/       Silero VAD and the voice gate of the DeepFilterNet3 plugins
 limiter-ladspa/   peak limiter
 dpdfnet/          DPDFNet engine, its own kernel crate, model bundle, export tools
 gtcrn-aec/        GTCRN-AEC engine, PipeWire SPA plugin, model, evaluation harness
 pkgbuild/         Arch/BigLinux split package
+testdata/         speech recordings shared by the tests
 docs/             design notes per engine and performance method
 ```
 

@@ -1,18 +1,21 @@
 //! Validated, aligned, immutable weight storage shared by all instances.
 //! Parsing, hashing, allocation and Arc cloning occur only during construction.
 use serde_json::Value;
-
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::Read,
+    marker::PhantomData,
     ops::Deref,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 
 pub type Error = String;
 pub type Result<T> = std::result::Result<T, Error>;
+
+const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
+const WEIGHTS_LIMIT: usize = 64 * 1024 * 1024;
 
 pub fn require(ok: bool, why: &str) -> Result<()> {
     if ok {
@@ -49,11 +52,8 @@ pub fn array<'a>(v: &'a Value, key: &str) -> Result<&'a Vec<Value>> {
         .ok_or_else(|| format!("missing array: {key}"))
 }
 
-/// 64-byte-aligned backing cell. The exporter aligns each tensor to 64 bytes
-/// inside the blob, but that only lands on a cache-line boundary if the base
-/// allocation is itself 64-aligned; `Box<[u64]>` guaranteed only 8. Aligning the
-/// base keeps every packed-weight and FP32 SIMD load off a line-crossing address,
-/// which matters most on SSE4.1 and small-cache CPUs.
+/// The exporter aligns every tensor to 64 bytes within the blob, so a 64-byte
+/// aligned base keeps every SIMD weight load inside one cache line.
 #[repr(C, align(64))]
 #[derive(Clone, Copy)]
 struct Align64([u8; 64]);
@@ -64,152 +64,82 @@ struct AlignedBlob {
 }
 impl AlignedBlob {
     fn new(data: &[u8]) -> Self {
-        let mut words = vec![Align64([0u8; 64]); data.len().div_ceil(64)];
-        // SAFETY: destination covers ceil(len/64)*64 bytes and does not overlap.
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), words.as_mut_ptr().cast(), data.len())
-        };
-        let blob = Self {
+        let mut words = vec![Align64([0; 64]); data.len().div_ceil(64)];
+        for (word, chunk) in words.iter_mut().zip(data.chunks(64)) {
+            word.0[..chunk.len()].copy_from_slice(chunk);
+        }
+        Self {
             words: words.into_boxed_slice(),
             bytes: data.len(),
-        };
-        debug_assert_eq!(
-            blob.words.as_ptr() as usize % 64,
-            0,
-            "blob base not 64-aligned"
-        );
-        blob
+        }
     }
 }
+
+/// `len` values of `T` at byte `offset` of a shared, immutable blob. Only this
+/// module builds views, and only of f32, i8 and i16, for which every bit
+/// pattern is a valid value.
 #[derive(Clone)]
-pub struct F32s {
-    // Owns the allocation `ptr` points into; never read.
-    #[allow(dead_code)]
-    blob: Arc<AlignedBlob>,
-    len: usize,
-    ptr: *const f32,
-}
-impl F32s {
-    /// Initialization-only aligned copy for private prepacked convolution data.
-    pub(crate) fn aligned_copy(values: &[f32]) -> Self {
-        // SAFETY: immutable bytes of a live f32 slice, copied before it is dropped.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
-        };
-        Self::view(Arc::new(AlignedBlob::new(bytes)), 0, values.len())
-    }
-}
-// SAFETY: the private pointer always refers into this view's immutable Arc-owned
-// AlignedBlob. Moving/cloning a view does not relocate the allocation. No mutable
-// access is provided; Deref ties its borrow to &self. Constructors
-// validate alignment/ranges, including empty slices. Only these owning types get
-// Send/Sync, not a general raw pointer wrapper.
-unsafe impl Send for F32s {}
-unsafe impl Sync for F32s {}
-impl F32s {
-    fn view(blob: Arc<AlignedBlob>, offset: usize, len: usize) -> Self {
-        assert_eq!(offset % std::mem::align_of::<f32>(), 0);
-        assert!(len
-            .checked_mul(std::mem::size_of::<f32>())
-            .and_then(|n| offset.checked_add(n))
-            .is_some_and(|end| end <= blob.bytes));
-        let ptr = unsafe { blob.words.as_ptr().cast::<u8>().add(offset).cast::<f32>() };
-        Self { blob, len, ptr }
-    }
-}
-impl Deref for F32s {
-    type Target = [f32];
-    #[inline(always)]
-    fn deref(&self) -> &[f32] {
-        // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-}
-#[derive(Clone)]
-pub struct I8s {
+pub struct Tensor<T> {
     blob: Arc<AlignedBlob>,
     offset: usize,
     len: usize,
-    ptr: *const i8,
+    element: PhantomData<T>,
 }
-// SAFETY: the private pointer always refers into this view's immutable Arc-owned
-// AlignedBlob. Moving/cloning a view does not relocate the allocation. No mutable
-// access is provided; Deref ties its borrow to &self. Constructors
-// validate alignment/ranges, including empty slices. Only these owning types get
-// Send/Sync, not a general raw pointer wrapper.
-unsafe impl Send for I8s {}
-unsafe impl Sync for I8s {}
-impl I8s {
+pub type F32s = Tensor<f32>;
+pub type I8s = Tensor<i8>;
+pub type I16s = Tensor<i16>;
+impl<T> Tensor<T> {
     fn view(blob: Arc<AlignedBlob>, offset: usize, len: usize) -> Self {
-        assert_eq!(offset % std::mem::align_of::<i8>(), 0);
+        assert_eq!(offset % std::mem::align_of::<T>(), 0);
         assert!(len
-            .checked_mul(std::mem::size_of::<i8>())
+            .checked_mul(std::mem::size_of::<T>())
             .and_then(|n| offset.checked_add(n))
             .is_some_and(|end| end <= blob.bytes));
-        let ptr = unsafe { blob.words.as_ptr().cast::<u8>().add(offset).cast::<i8>() };
         Self {
             blob,
             offset,
             len,
-            ptr,
+            element: PhantomData,
         }
     }
 }
-impl Deref for I8s {
-    type Target = [i8];
-    #[inline(always)]
-    fn deref(&self) -> &[i8] {
-        // SAFETY: view() and owning-type invariants above; not a 'static borrow.
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+impl F32s {
+    /// An aligned copy of weights derived during construction.
+    pub(crate) fn aligned_copy(values: &[f32]) -> Self {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        Self::view(Arc::new(AlignedBlob::new(&bytes)), 0, values.len())
     }
 }
-/// Exact sign-extended cache view; no dequantization or changed scales.
-#[derive(Clone)]
-pub(crate) struct I16s {
-    // Owns the allocation `ptr` points into; never read.
-    #[allow(dead_code)]
-    blob: Arc<AlignedBlob>,
-    len: usize,
-    ptr: *const i16,
-}
-impl I16s {
-    fn view(blob: Arc<AlignedBlob>, len: usize) -> Self {
-        assert!(len.checked_mul(2).is_some_and(|n| n <= blob.bytes));
-        let ptr = blob.words.as_ptr().cast::<i16>();
-        Self { blob, len, ptr }
-    }
-}
-// SAFETY: same immutable Arc-owned pointer invariants as F32s/I8s above.
-unsafe impl Send for I16s {}
-unsafe impl Sync for I16s {}
-impl Deref for I16s {
-    type Target = [i16];
+impl<T> Deref for Tensor<T> {
+    type Target = [T];
     #[inline(always)]
-    fn deref(&self) -> &[i16] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    fn deref(&self) -> &[T] {
+        // SAFETY: view() checked that the range is aligned for T and inside the
+        // blob, which self keeps alive and nothing mutates; T accepts any bits.
+        unsafe {
+            let base = self.blob.words.as_ptr().cast::<u8>().add(self.offset);
+            std::slice::from_raw_parts(base.cast::<T>(), self.len)
+        }
     }
 }
 
-// Retain compact metadata, not the much larger serde_json::Value tree.
-// Instances parse it only during construction, then discard that temporary tree.
+// Keeps the compact manifest bytes, not the much larger serde_json::Value tree.
 pub struct Bundle {
     manifest_json: Box<[u8]>,
-    schema: usize,
     blob: Arc<AlignedBlob>,
-    // Initialization-only cache for schema-1 compatibility. Prepacked schema-2
-    // bundles use the main blob directly and leave this cache empty.
-    packed: Mutex<HashMap<(usize, usize, usize), I8s>>,
-    recurrent: Mutex<HashMap<(usize, usize, usize), I16s>>,
+    widened: Mutex<HashMap<usize, I16s>>,
 }
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let size = file.metadata().map_err(|e| e.to_string())?.len();
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    let limit = limit as u64;
+    let failed = |e: std::io::Error| format!("{}: {e}", path.display());
+    let file = std::fs::File::open(path).map_err(failed)?;
+    let size = file.metadata().map_err(failed)?.len();
     require(size <= limit, "model file exceeds size limit")?;
     let mut data = Vec::with_capacity(size as usize);
-    // Limit the read itself as well: a file can grow between metadata() and read().
+    // The file can grow between metadata() and the read.
     file.take(limit + 1)
         .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
+        .map_err(failed)?;
     require(
         data.len() as u64 <= limit,
         "model file grew beyond size limit",
@@ -226,11 +156,8 @@ impl Bundle {
     }
     pub fn open(dir: impl AsRef<Path>) -> Result<Arc<Self>> {
         let dir = dir.as_ref();
-        // Bound external data before allocating. These are model-only, not generic tensor files.
-        let mp = dir.join("manifest.json");
-        let bp = dir.join("weights.bin");
-        let m = read_bounded(&mp, 4 * 1024 * 1024)?;
-        let b = read_bounded(&bp, 64 * 1024 * 1024)?;
+        let m = read_bounded(&dir.join("manifest.json"), MANIFEST_LIMIT)?;
+        let b = read_bounded(&dir.join("weights.bin"), WEIGHTS_LIMIT)?;
         Self::from_bytes(&m, &b)
     }
     pub fn from_bytes(manifest: &[u8], bytes: &[u8]) -> Result<Arc<Self>> {
@@ -239,14 +166,20 @@ impl Bundle {
             "big-endian targets are not supported",
         )?;
         require(
-            manifest.len() <= 4 * 1024 * 1024 && bytes.len() <= 64 * 1024 * 1024,
+            manifest.len() <= MANIFEST_LIMIT && bytes.len() <= WEIGHTS_LIMIT,
             "model too large",
         )?;
         let manifest: Value = serde_json::from_slice(manifest).map_err(|e| e.to_string())?;
-        require(
-            matches!(num(&manifest, "schema")?, 1 | 2),
-            "unsupported manifest schema",
-        )?;
+        match num(&manifest, "schema")? {
+            2 => {}
+            1 => {
+                return Err(
+                    "schema-1 bundle with row-major matrices: pack it with tools/pack_matrices.py"
+                        .into(),
+                )
+            }
+            _ => return Err("unsupported manifest schema".into()),
+        }
         require(
             string(&manifest, "architecture")? == "dpdfnet-48hr-v1",
             "wrong model architecture",
@@ -262,53 +195,31 @@ impl Bundle {
         )?;
         let compact = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
         Ok(Arc::new(Self {
-            schema: num(&manifest, "schema")?,
             manifest_json: compact.into_boxed_slice(),
             blob: Arc::new(AlignedBlob::new(bytes)),
-            packed: Mutex::new(HashMap::new()),
-            recurrent: Mutex::new(HashMap::new()),
+            widened: Mutex::new(HashMap::new()),
         }))
     }
-    pub(crate) fn recurrent_cache(&self, w: &I8s) -> Result<I16s> {
+    /// A 192x64 recurrent matrix widened to i16, shared by every instance.
+    pub(crate) fn widened_recurrent(&self, w: &I8s) -> Result<I16s> {
         require(
-            w.len() == 192 * 64,
-            "recurrent cache is restricted to 192x64",
+            w.len() == 192 * 64 && Arc::ptr_eq(&w.blob, &self.blob),
+            "only this bundle's 192x64 matrices are widened",
         )?;
-        let key = (Arc::as_ptr(&w.blob) as usize, w.offset, w.len);
-        let mut cache = self
-            .recurrent
-            .lock()
-            .map_err(|_| "recurrent cache poisoned")?;
-        if let Some(value) = cache.get(&key) {
-            return Ok(value.clone());
+        let mut cache = self.widened.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(widened) = cache.get(&w.offset) {
+            return Ok(widened.clone());
         }
-        // At most 2 intra cells x 2 branches x 8 DPRNN blocks. This is not a
-        // generic expansion of all recurrent/embedding/pointwise tensors.
-        require(cache.len() < 32, "too many small recurrent caches")?;
-        let data: Vec<i16> = w.iter().map(|&v| i16::from(v)).collect();
-        // SAFETY: readable bytes of a live initialized i16 slice; immediately copied.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), data.len() * 2) };
-        let out = I16s::view(Arc::new(AlignedBlob::new(bytes)), data.len());
-        cache.insert(key, out.clone());
-        Ok(out)
+        // Two directions of up to 8 blocks in each of the two DPRNN branches.
+        require(cache.len() < 32, "too many widened recurrent matrices")?;
+        let bytes: Vec<u8> = w.iter().flat_map(|&v| i16::from(v).to_ne_bytes()).collect();
+        let widened = I16s::view(Arc::new(AlignedBlob::new(&bytes)), 0, w.len());
+        cache.insert(w.offset, widened.clone());
+        Ok(widened)
     }
-    /// Diagnostics only: locks initialization cache; NEVER call from process().
-    pub fn derived_recurrent_bytes(&self) -> usize {
-        self.recurrent
-            .lock()
-            .map(|m| m.values().map(|v| v.len * 2).sum())
-            .unwrap_or(0)
-    }
-    /// Initialization/diagnostics only. Never called by a process/forward method.
+    /// Parses the manifest again; for construction, never for processing.
     pub fn manifest(&self) -> Result<Value> {
         serde_json::from_slice(&self.manifest_json).map_err(|e| e.to_string())
-    }
-    pub(crate) fn schema(&self) -> usize {
-        self.schema
-    }
-    pub fn metadata_bytes(&self) -> usize {
-        self.manifest_json.len()
     }
     fn range(&self, v: &Value, kind: &str, size: usize) -> Result<(usize, usize)> {
         require(string(v, "dtype")? == kind, "wrong tensor dtype")?;
@@ -341,37 +252,6 @@ impl Bundle {
         )?;
         Ok(a)
     }
-    /// Construction only. Shares one packed copy among instances using this Bundle.
-    /// Prefer tools/pack_matrices.py to avoid this compatibility-copy allocation.
-    pub(crate) fn packed_i8s(&self, v: &Value, rows: usize, cols: usize) -> Result<I8s> {
-        require(
-            rows.is_multiple_of(8) && cols.is_multiple_of(2) && rows > 0 && cols > 0,
-            "pair-packed matrix dimensions",
-        )?;
-        let original = self.i8s(v, rows * cols)?;
-        let key = (num(v, "offset")?, rows, cols);
-        let mut cache = self
-            .packed
-            .lock()
-            .map_err(|_| "weight cache poisoned".to_owned())?;
-        if let Some(w) = cache.get(&key) {
-            return Ok(w.clone());
-        }
-        let packed = crate::packed::pack_rows(&original, rows, cols);
-        // Every i8 is one byte; copying its representation preserves signed values.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(packed.as_ptr().cast::<u8>(), packed.len()) };
-        let w = I8s::view(Arc::new(AlignedBlob::new(bytes)), 0, packed.len());
-        cache.insert(key, w.clone());
-        Ok(w)
-    }
-    /// Diagnostics only: this locks the initialization cache, never call in process().
-    pub fn compatibility_packed_bytes(&self) -> usize {
-        self.packed
-            .lock()
-            .map(|c| c.values().map(|v| v.len).sum())
-            .unwrap_or(0)
-    }
     pub fn weight_bytes(&self) -> usize {
         self.blob.bytes
     }
@@ -381,7 +261,7 @@ impl Bundle {
 mod tests {
     use super::*;
     fn bundle(bytes: &[u8]) -> Arc<Bundle> {
-        let m = serde_json::json!({"schema":1,"architecture":"dpdfnet-48hr-v1",
+        let m = serde_json::json!({"schema":2,"architecture":"dpdfnet-48hr-v1",
             "weights_sha256":format!("{:x}", Sha256::digest(bytes)), "weight_bytes":bytes.len()});
         Bundle::from_bytes(&serde_json::to_vec(&m).unwrap(), bytes).unwrap()
     }
@@ -421,6 +301,13 @@ mod tests {
             .is_err());
     }
     #[test]
+    fn rejects_schema_1_with_a_repacking_hint() {
+        let mut m = bundle(&[0; 4]).manifest().unwrap();
+        m["schema"] = serde_json::json!(1);
+        let e = Bundle::from_bytes(&serde_json::to_vec(&m).unwrap(), &[0; 4]).err();
+        assert!(e.unwrap().contains("pack_matrices.py"));
+    }
+    #[test]
     fn rejects_checksum_and_length_mismatch() {
         let b = bundle(&[0; 4]);
         let mut m = b.manifest().unwrap();
@@ -435,9 +322,6 @@ mod view_tests {
     use super::*;
     #[test]
     fn owned_views_survive_move_clone_and_cross_thread_drop() {
-        fn send_sync<T: Send + Sync>() {}
-        send_sync::<F32s>();
-        send_sync::<I8s>();
         let words: Vec<f32> = (0..32).map(|i| i as f32 - 7.25).collect();
         let a = F32s::aligned_copy(&words);
         let a2 = a.clone();

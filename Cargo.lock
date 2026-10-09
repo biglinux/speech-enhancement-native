@@ -62,6 +62,7 @@ name = "dfn-tools"
 version = "0.1.0"
 dependencies = [
  "dfn3-ladspa",
+ "dfn3-plugin",
  "dfn3ll-ladspa",
 ]
 
@@ -70,7 +71,17 @@ name = "dfn3-ladspa"
 version = "0.1.0"
 dependencies = [
  "dfn-ops",
+ "dfn3-plugin",
+ "silero-vad",
+]
+
+[[package]]
+name = "dfn3-plugin"
+version = "0.1.0"
+dependencies = [
+ "dfn-ops",
  "realfft",
+ "silero-vad",
 ]
 
 [[package]]
@@ -78,7 +89,8 @@ name = "dfn3ll-ladspa"
 version = "0.1.0"
 dependencies = [
  "dfn-ops",
- "realfft",
+ "dfn3-plugin",
+ "silero-vad",
 ]
 
 [[package]]
@@ -95,6 +107,7 @@ dependencies = [
 name = "dpdfnet-native"
 version = "0.1.0"
 dependencies = [
+ "dfn-ops",
  "dpdfnet-ops",
  "libc",
  "realfft",
@@ -105,9 +118,6 @@ dependencies = [
 [[package]]
 name = "dpdfnet-ops"
 version = "0.1.0"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "generic-array"
@@ -272,10 +282,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "silero-vad"
+version = "0.1.0"
+dependencies = [
+ "dfn-ops",
+]
+
+[[package]]
 name = "spa-aec-gtcrn"
 version = "0.1.0"
 dependencies = [
  "aec-gtcrn",
+ "dfn-ops",
 ]
 
 [[package]]

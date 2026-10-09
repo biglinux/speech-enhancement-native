@@ -1,6 +1,6 @@
-//! Exact W8A16 packed GEMV for DFN3 (768x256) and DFN3-LL (1536x512).
-//! Format [rows/8, cols/2, lane, pair member]; scales and gate order unchanged.
-//! AVX2 uses 64 output accumulators per tile; SSE uses 32. No int16 cache.
+//! Exact W8A16 GEMV over the pair-packed matrices of DFN3 (768x256) and
+//! DFN3-LL (1536x512), laid out `[rows/8, cols/2, lane, pair member]`
+//! (see `pack_format`). AVX2 keeps 64 output accumulators per tile, SSE 32.
 use crate::simd_tier;
 pub(crate) fn matvec(
     y: &mut [f32],
@@ -15,14 +15,15 @@ pub(crate) fn matvec(
         rows > 0 && rows.is_multiple_of(8) && cols > 0 && cols.is_multiple_of(2) && cols <= 1024
     );
     assert!(y.len() >= rows && s.len() >= rows && q.len() >= cols && w.len() >= rows * cols);
-    // Keep the public-safe arbitrary-i16 contract. The actual quantizer emits ±16383.
-    let safe = cols <= 511
+    // The SIMD kernels accumulate in i32: exact for any i16 input up to 511 columns,
+    // beyond that only for small enough activations. The quantizer emits ±16383.
+    #[cfg(target_arch = "x86_64")]
+    if cols <= 511
         || q[..cols]
             .iter()
             .fold(0u64, |a, &x| a.saturating_add(i64::from(x).unsigned_abs()))
-            <= i32::MAX as u64 / 128;
-    #[cfg(target_arch = "x86_64")]
-    if safe {
+            <= i32::MAX as u64 / 128
+    {
         if !cfg!(feature = "force-sse41")
             && !cfg!(feature = "force-avx1")
             && std::is_x86_feature_detected!("avx2")
@@ -39,7 +40,10 @@ pub(crate) fn matvec(
             return;
         }
     }
-    let _ = safe;
+    scalar(y, w, s, q, sx, rows, cols);
+}
+
+fn scalar(y: &mut [f32], w: &[i8], s: &[f32], q: &[i16], sx: f32, rows: usize, cols: usize) {
     for r in 0..rows {
         let mut sum = 0i128;
         for j in 0..cols {
@@ -243,7 +247,7 @@ macro_rules! one_body {
             let mut a7 = _mm_setzero_si128();
             let mut j = 0usize;
             while j < cols {
-                // ONE broadcast for 32 outputs; the baseline does eight.
+                // One broadcast serves all 32 outputs.
                 let x = _mm_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
                 a0 = _mm_add_epi32(
                     a0,
@@ -442,4 +446,49 @@ unsafe fn vex_one(
     cols: usize,
 ) {
     one_body!(out, w, sw, q, sx, rows, cols);
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    // The dispatch only runs the host's tier, so call every kernel the host supports.
+    #[test]
+    fn every_tier_is_bit_identical_to_the_scalar_product() {
+        let mut seed = 0x1234_5678_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for (rows, cols) in [
+            (8, 2),
+            (24, 6),
+            (72, 64),
+            (768, 256),
+            (1536, 512),
+            (64, 1024),
+        ] {
+            let w: Vec<i8> = (0..rows * cols).map(|_| next() as i8).collect();
+            let s: Vec<f32> = (0..rows).map(|i| 0.001 * (i % 9 + 1) as f32).collect();
+            let q: Vec<i16> = (0..cols).map(|_| (next() % 32767) as i16 - 16383).collect();
+            let mut want = vec![0.0; rows];
+            scalar(&mut want, &w, &s, &q, 0.004, rows, cols);
+            let bits = |y: &[f32]| y.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            let mut got = vec![0.0; rows];
+            if is_x86_feature_detected!("avx2") {
+                unsafe { avx2_one(&mut got, &w, &s, &q, &[0.004], rows, cols) };
+                assert_eq!(bits(&got), bits(&want), "avx2 {rows}x{cols}");
+            }
+            if is_x86_feature_detected!("avx") {
+                unsafe { vex_one(&mut got, &w, &s, &q, &[0.004], rows, cols) };
+                assert_eq!(bits(&got), bits(&want), "avx {rows}x{cols}");
+            }
+            if is_x86_feature_detected!("sse4.1") {
+                unsafe { sse_one(&mut got, &w, &s, &q, &[0.004], rows, cols) };
+                assert_eq!(bits(&got), bits(&want), "sse4.1 {rows}x{cols}");
+            }
+        }
+    }
 }

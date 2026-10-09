@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "ops",
+    "deepfilternet3/dfn3-plugin",
     "deepfilternet3/dfn3-ladspa",
     "deepfilternet3/dfn3ll-ladspa",
     "deepfilternet3/tools",
@@ -9,6 +10,7 @@ members = [
     "dpdfnet/ops",
     "gtcrn-aec/aec-gtcrn",
     "gtcrn-aec/spa-aec-gtcrn",
+    "silero-vad",
 ]
 exclude = ["deepfilternet3/dfn3-ladspa/fuzz", "deepfilternet3/dfn3ll-ladspa/fuzz"]
 resolver = "2"

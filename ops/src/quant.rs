@@ -1,38 +1,37 @@
-//! Port of SIMD abs-max and ties-away quantization. Legacy exceptional behavior
-//! is retained by fallback; do not transplant DPDFNet's different tiny-vector policy.
+//! SIMD abs-max and round-half-away-from-zero quantization behind
+//! `quantize_i16`. Non-finite input takes the scalar reference, which defines the
+//! saturated result.
 pub(crate) fn quantize(x: &[f32], out: &mut [i16]) -> f32 {
     assert!(out.len() >= x.len(), "quantize_i16: output too short");
-    let tier = crate::simd_tier();
     #[cfg(target_arch = "x86_64")]
-    let amax = unsafe {
-        match tier {
-            2 | 3 => abs_max_avx(x),
-            1 => abs_max_sse(x),
-            _ => return crate::quantize_i16_reference(x, out),
+    {
+        let tier = crate::simd_tier();
+        if tier >= 1 {
+            // SAFETY: tier 1 guarantees SSE4.1, 2 AVX, 3 AVX2; `out` holds `x.len()`.
+            let amax = unsafe {
+                if tier >= 2 {
+                    abs_max_avx(x)
+                } else {
+                    abs_max_sse(x)
+                }
+            };
+            // `amax` is NaN when any input is not finite.
+            let scale = if amax > 0.0 { amax / 16383.0 } else { 1.0 };
+            let inv = 1.0 / scale;
+            if amax.is_finite() && inv.is_finite() {
+                // SAFETY: as above.
+                unsafe {
+                    match tier {
+                        3 => quantize_avx2(x, out, inv),
+                        2 => quantize_round_avx(x, out, inv),
+                        _ => quantize_sse(x, out, inv),
+                    }
+                }
+                return scale;
+            }
         }
-    };
-    #[cfg(not(target_arch = "x86_64"))]
-    let amax = x.iter().fold(0f32, |a, &v| a.max(v.abs()));
-    let scale = if amax > 0.0 { amax / 16383.0 } else { 1.0 };
-    let inv = 1.0 / scale;
-    // NaN sentinel means at least one non-finite input was observed; preserve Rust
-    // saturating casts / clamp semantics through the original scalar implementation.
-    if !amax.is_finite() || !inv.is_finite() {
-        return crate::quantize_i16_reference(x, out);
     }
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        match tier {
-            3 => quantize_avx2(x, out, inv),
-            2 => quantize_round_avx(x, out, inv),
-            1 => quantize_sse(x, out, inv),
-            _ => return crate::quantize_i16_reference(x, out),
-        }
-    };
-    #[cfg(not(target_arch = "x86_64"))]
-    return crate::quantize_i16_reference(x, out);
-    #[cfg(target_arch = "x86_64")]
-    scale
+    crate::quantize_i16_reference(x, out)
 }
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -40,7 +39,6 @@ use std::arch::x86_64::*;
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn abs_max_avx(x: &[f32]) -> f32 {
-    use std::arch::x86_64::*;
     let absmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fff_ffff));
     let mut bad = _mm256_setzero_ps();
     let mut m = _mm256_setzero_ps();
@@ -72,7 +70,6 @@ unsafe fn abs_max_avx(x: &[f32]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn abs_max_sse(x: &[f32]) -> f32 {
-    use std::arch::x86_64::*;
     let absmask = _mm_castsi128_ps(_mm_set1_epi32(0x7fff_ffff));
     let mut bad = _mm_setzero_ps();
     let mut m = _mm_setzero_ps();
@@ -104,7 +101,6 @@ unsafe fn abs_max_sse(x: &[f32]) -> f32 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn quantize_round_avx(x: &[f32], out: &mut [i16], inv: f32) {
-    use std::arch::x86_64::*;
     let vinv = _mm256_set1_ps(inv);
     let half = _mm256_set1_ps(0.5);
     let one = _mm256_set1_ps(1.0);
@@ -140,7 +136,6 @@ unsafe fn quantize_round_avx(x: &[f32], out: &mut [i16], inv: f32) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn quantize_round_sse(x: &[f32], out: &mut [i16], inv: f32) {
-    use std::arch::x86_64::*;
     let vinv = _mm_set1_ps(inv);
     let half = _mm_set1_ps(0.5);
     let one = _mm_set1_ps(1.0);

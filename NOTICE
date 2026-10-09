@@ -41,5 +41,15 @@ project is not affiliated with or endorsed by the upstream authors.
    Architecture: GTCRN, Xiaobin Rong et al., ICASSP 2024,
    https://github.com/Xiaobin-Rong/gtcrn (MIT).
 
+4. Silero VAD v6.2.3 (16 kHz model)
+   Silero Team. https://github.com/snakers4/silero-vad
+   License: MIT (silero-vad/model/LICENSE-Silero).
+   Source: silero_vad/data/silero_vad_16k_op15.onnx from the silero-vad 6.2.3
+   Python wheel, sha256
+   7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49.
+   File: silero-vad/model/silero_vad_16k.bin
+   Changes: the ONNX initializers written as raw little-endian f32
+   (silero-vad/tools/export_weights.py), values unchanged.
+
 Rust dependencies keep their own licenses; `cargo deny check licenses` lists
 them.

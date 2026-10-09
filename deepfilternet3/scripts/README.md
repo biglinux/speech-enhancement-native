@@ -2,48 +2,47 @@
 
 ## `quantize_int8.py`
 
-Converts a DeepFilterNet **f32** weight blob into the **int8-hybrid** format the
-engines load, and regenerates that crate's `src/weights.rs` accessor table.
+Records how the committed `dfn3-ladspa/dfn3_weights.bin` and
+`dfn3ll-ladspa/dfn3ll_weights.bin` were made from the upstream DeepFilterNet3
+ONNX models (Rikorose/DeepFilterNet):
 
-```
-ONNX (upstream)  ──►  f32 <name>_weights.bin + f32 src/weights.rs  ──►  quantize_int8.py  ──►  int8 blob + hybrid weights.rs
-   (Rikorose/DeepFilterNet)        (extraction, upstream-specific)         (this script)          (committed in the crate)
-```
+1. An extraction step, not in this repository, wrote each model's tensors as an
+   f32 blob and a Rust table of their offsets.
+2. This script quantizes the GRU matrices of that blob and writes the int8-hybrid
+   blob that is committed.
+3. Each crate's `build.rs` repacks the committed blob into the tiled layout the
+   engine reads (`ops/src/pack_format.rs`) and embeds it in the plugin.
 
-The extraction step (ONNX → f32 `*_weights.bin` laid out by an f32 `weights.rs`)
-is upstream-model-specific and lives outside this repo; the crates ship the int8
-output of this script.
+Without the f32 input the script cannot be rerun from this checkout.
 
 ### What it does
 
-Only the GRU projection matrices (`*_gru<n>_W` / `*_gru<n>_R`, shape `[3*HID, HID]`)
-are quantized — they are ~94% of the compute and the memory-bound part. Each is
-quantized **per output row, symmetric int8**:
+Only the GRU projection matrices (`*_gru<n>_W` / `*_gru<n>_R`, shape
+`[3*HID, HID]`) are quantized. They hold about 94% of the multiply-adds and are
+the memory-bound part. Each is quantized per output row, symmetric int8:
 
 ```
-scale[i] = max(|row_i|) / 127
+scale[i] = max(|w[i,:]|) / 127
 q[i,j]   = round(w[i,j] / scale[i])   clamped to [-127, 127]
 ```
 
-Everything else (convs, grouped linears, biases) stays f32. At runtime the GEMV is
-exact-integer (`dfn-ops::matvec_i8_i16`, `pmaddwd`):
+Everything else (convolutions, grouped linears, biases) stays f32. At run time the
+product is exact in integers (`dfn_ops::gru_cell_packed`, `pmaddwd`):
 
 ```
 y[i] = (Σ q[i,j] · xq[j]) · scale[i] · xscale
 ```
 
-with the activation quantized to int16 per vector (`quantize_i16`). This W8A16
-scheme is bit-identical across the SIMD tiers and validated stage-by-stage against
-the upstream ONNX (encoder/mask 100–140 dB SDR).
+with the activation quantized to int16 per vector. This W8A16 scheme gives the
+same bits on every SIMD tier.
 
 ### Usage
 
 ```bash
-python3 scripts/quantize_int8.py <crate_dir> <HID>
-#   dfn3-ladspa   (DeepFilterNet3):     HID 256  ->  ~2.67 MB (fits a 3 MB L3)
-#   dfn3ll-ladspa (DeepFilterNet3-LL):  HID 512  ->  ~10.7 MB
+python3 quantize_int8.py F32_BLOB F32_TABLE HID OUT_BLOB
+#   DeepFilterNet3:     HID 256, about 2.67 MB
+#   DeepFilterNet3-LL:  HID 512, about 10.7 MB
 ```
 
-Run once on the f32 crate; it overwrites `<name>_weights.bin` and `src/weights.rs`
-in place, then run `cargo fmt` (the generated `weights.rs` is valid Rust but not
-rustfmt-formatted). Requires `numpy`. The int8 blob is byte-reproducible.
+It prints the offset of every tensor in its section; `src/weights.rs` of the
+crate must hold the same offsets. Requires `numpy`.

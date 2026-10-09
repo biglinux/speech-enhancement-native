@@ -363,7 +363,7 @@ def write_bundle(exporter: Exporter, manifest: dict, output: Path, checkpoint: P
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (output / "tensor_inventory.json").write_text(json.dumps(exporter.writer.tensors, indent=2) + "\n")
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--upstream", type=Path, required=True)
     p.add_argument("--checkpoint", type=Path, required=True)
@@ -373,11 +373,14 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
     torch.set_num_threads(1)
-    model = load_model(args.upstream, args.checkpoint, args.depth)
-    exporter = Exporter(args.mode, set(args.float_gru))
-    with torch.inference_mode():
-        manifest = exporter.model(model, args.depth)
-    write_bundle(exporter, manifest, args.output, args.checkpoint)
+    try:
+        model = load_model(args.upstream, args.checkpoint, args.depth)
+        exporter = Exporter(args.mode, set(args.float_gru))
+        with torch.inference_mode():
+            manifest = exporter.model(model, args.depth)
+        write_bundle(exporter, manifest, args.output, args.checkpoint)
+    except (OSError, ValueError) as e:
+        p.error(str(e))
     print(json.dumps({"output": str(args.output), "weight_bytes": manifest["weight_bytes"],
                       "sha256": manifest["weights_sha256"], "mode": args.mode}, indent=2))
 

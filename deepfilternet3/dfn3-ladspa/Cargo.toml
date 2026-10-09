@@ -10,8 +10,11 @@ publish = false # cdylib LADSPA plugin, built to .so; never published to crates.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-realfft = "3"
 dfn-ops = { path = "../../ops" }
+dfn3-plugin = { path = "../dfn3-plugin" }
+
+[dev-dependencies]
+silero-vad = { path = "../../silero-vad" }
 
 [features]
 # Diagnostics: cap the SIMD tier the project kernels select at run time, to

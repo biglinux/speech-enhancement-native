@@ -1,74 +1,76 @@
-//! Mono lookahead brickwall limiter as a hand-written LADSPA 1.1 plugin.
+//! Mono lookahead peak limiter as a LADSPA 1.1 plugin.
 //!
-//! The microphone pipeline's final "clamp" node prevents clipping only by
-//! hard-clipping, which distorts. A transparent limiter delays the audio by a
-//! short lookahead, tracks the upcoming peak, and rides the gain down *before*
-//! the peak reaches the output so the ceiling is met without a hard corner. A
-//! final clamp stays as an absolute guarantee. Latency is the lookahead in
-//! samples. LADSPA 1.1 has no generic latency field; the graph owner must account
-//! for it explicitly (or use a documented latency control-port extension).
-//!
-//! No mono lookahead limiter LADSPA ships on the system (fastLookaheadLimiter is
-//! stereo; hardLimiter is a bare clamp), hence this crate. Pure `f32`, no deps.
+//! The audio is delayed by a 3 ms lookahead, so the gain can ramp down before a
+//! peak reaches the output instead of clipping it. A final clamp at the ceiling
+//! catches rounding. The plugin adds `LOOKAHEAD_MS` of latency, which LADSPA 1.1
+//! cannot report; the graph owner has to account for it.
 
 use std::collections::VecDeque;
 use std::os::raw::{c_char, c_ulong, c_void};
 use std::ptr;
 
-/// Lookahead in milliseconds. 3 ms is enough to smooth transients at 48 kHz
-/// while adding only 3 ms of algorithmic latency.
 const LOOKAHEAD_MS: f32 = 3.0;
 
-/// Pure DSP core, independent of the C ABI so it can be unit-tested directly.
-pub struct Limiter {
-    delay: Vec<f32>,            // audio delay ring, length = lookahead
-    mags: VecDeque<(u64, f32)>, // monotonic-decreasing window of (index, |x|)
+const CEILING_DB: (f32, f32) = (-20.0, 0.0);
+const RELEASE_S: (f32, f32) = (0.01, 2.0);
+
+/// The value LADSPA `DEFAULT_HIGH` gives a port, so hosts that apply the hints and
+/// the plugin itself start from the same settings.
+const fn default_high((lower, upper): (f32, f32)) -> f32 {
+    0.25 * lower + 0.75 * upper
+}
+
+struct Limiter {
+    delay: Vec<f32>,            // audio delay ring, `look` samples
+    mags: VecDeque<(u64, f32)>, // decreasing window of (index, |x|) over look + 1 inputs
     idx: u64,
-    gain: f32,
+    envelope: f32,     // gain the window needs, recovering by `release_step`
+    history: Vec<f32>, // the last look + 1 envelope values
+    sum: f64,          // sum of `history`
     ceiling: f32,      // linear peak ceiling
     release_step: f32, // per-sample linear gain recovery
     look: usize,
 }
 
 impl Limiter {
-    #[must_use]
-    pub fn new(sample_rate: f32, ceiling_db: f32, release_s: f32) -> Self {
+    fn new(sample_rate: f32, ceiling_db: f32, release_s: f32) -> Self {
         let look = ((sample_rate * LOOKAHEAD_MS / 1000.0).round() as usize).max(1);
-        Self {
+        let mut limiter = Self {
             delay: vec![0.0; look],
             mags: VecDeque::with_capacity(look + 1),
             idx: 0,
-            gain: 1.0,
+            envelope: 1.0,
+            history: vec![1.0; look + 1],
+            sum: 0.0,
             ceiling: db_to_lin(ceiling_db),
-            release_step: 1.0 / (release_s.max(1e-3) * sample_rate),
+            release_step: 0.0,
             look,
-        }
+        };
+        limiter.set_release_s(release_s, sample_rate);
+        limiter.reset();
+        limiter
     }
 
-    /// Reset signal history without allocating or invalidating connected ports.
-    pub fn reset(&mut self) {
+    /// Clears the signal history without allocating.
+    fn reset(&mut self) {
         self.delay.fill(0.0);
         self.mags.clear();
         self.idx = 0;
-        self.gain = 1.0;
+        self.envelope = 1.0;
+        self.history.fill(1.0);
+        self.sum = self.history.len() as f64;
     }
 
-    /// Latency in samples the plugin adds (the lookahead).
-    #[must_use]
-    pub fn latency(&self) -> usize {
-        self.look
-    }
-
-    pub fn set_ceiling_db(&mut self, ceiling_db: f32) {
+    fn set_ceiling_db(&mut self, ceiling_db: f32) {
         self.ceiling = db_to_lin(ceiling_db);
     }
 
-    pub fn set_release_s(&mut self, release_s: f32, sample_rate: f32) {
+    fn set_release_s(&mut self, release_s: f32, sample_rate: f32) {
         self.release_step = 1.0 / (release_s.max(1e-3) * sample_rate);
     }
 
-    /// Process disjoint Rust slices. The LADSPA wrapper also permits exact in-place.
-    pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
+    #[cfg(test)]
+    fn process(&mut self, input: &[f32], output: &mut [f32]) {
         assert_eq!(input.len(), output.len());
         for (&x, out) in input.iter().zip(output) {
             *out = self.process_sample(x);
@@ -76,10 +78,9 @@ impl Limiter {
     }
 
     fn process_sample(&mut self, x: f32) -> f32 {
-        // Do not retain NaN/Inf in the lookahead history or peak envelope.
         let x = if x.is_finite() { x } else { 0.0 };
-        // Sliding max of |x| over the lookahead window (this output sample
-        // plus its `look` successors), via a monotonic-decreasing deque.
+        // Sliding max of |x| over the sample leaving the delay line and the `look`
+        // samples behind it.
         let oldest = self.idx.saturating_sub(self.look as u64);
         while self.mags.front().is_some_and(|&(j, _)| j < oldest) {
             self.mags.pop_front();
@@ -92,28 +93,30 @@ impl Limiter {
         self.mags.push_back((self.idx, mag));
         let peak = self.mags.front().map_or(0.0, |&(_, m)| m);
 
-        // Target gain that would hold the windowed peak at the ceiling.
-        let target = if peak > self.ceiling {
+        let need = if peak > self.ceiling {
             self.ceiling / peak
         } else {
             1.0
         };
-        // Ride down immediately (the peak is still `look` samples from the
-        // output), recover linearly by the release step.
-        if target < self.gain {
-            self.gain = target;
-        } else {
-            self.gain = (self.gain + self.release_step).min(target);
-        }
+        self.envelope = need.min(self.envelope + self.release_step);
 
-        // Output the delayed sample scaled by the gain, then clamp as an
-        // absolute brickwall guarantee.
-        let slot = (self.idx as usize) % self.look;
+        // The gain is the mean envelope over the window. Every envelope value in it
+        // already allows for the sample leaving the delay line, so the mean does
+        // too, and a new peak is approached in look + 1 equal steps.
+        let slot = (self.idx % self.history.len() as u64) as usize;
+        self.sum += f64::from(self.envelope) - f64::from(self.history[slot]);
+        self.history[slot] = self.envelope;
+        if slot == 0 {
+            // Bound the rounding drift of the running sum.
+            self.sum = self.history.iter().copied().map(f64::from).sum();
+        }
+        let gain = (self.sum / self.history.len() as f64) as f32;
+
+        let slot = (self.idx % self.look as u64) as usize;
         let delayed = self.delay[slot];
         self.delay[slot] = x;
-        let output = (delayed * self.gain).clamp(-self.ceiling, self.ceiling);
         self.idx += 1;
-        output
+        (delayed * gain).clamp(-self.ceiling, self.ceiling)
     }
 }
 
@@ -163,7 +166,7 @@ const PORT_CONTROL: i32 = 0x4;
 const PORT_AUDIO: i32 = 0x8;
 const HINT_BOUNDED_BELOW: i32 = 0x1;
 const HINT_BOUNDED_ABOVE: i32 = 0x2;
-const HINT_DEFAULT_HIGH: i32 = 0x100; // 0.25*lower + 0.75*upper
+const HINT_DEFAULT_HIGH: i32 = 0x100;
 
 struct Instance {
     lim: Limiter,
@@ -182,15 +185,17 @@ extern "C" fn instantiate(_d: *const Descriptor, sr: c_ulong) -> Handle {
         return ptr::null_mut();
     }
     let sr = sr as f32;
+    let ceiling = default_high(CEILING_DB);
+    let release = default_high(RELEASE_S);
     let inst = Box::new(Instance {
-        lim: Limiter::new(sr, -1.0, 0.2),
+        lim: Limiter::new(sr, ceiling, release),
         sr,
         p_in: ptr::null(),
         p_out: ptr::null_mut(),
         p_ceiling: ptr::null(),
         p_release: ptr::null(),
-        last_ceiling: -1.0,
-        last_release: 0.2,
+        last_ceiling: ceiling,
+        last_release: release,
     });
     Box::into_raw(inst) as Handle
 }
@@ -225,14 +230,16 @@ extern "C" fn run(h: Handle, n: c_ulong) {
     if !inst.p_ceiling.is_null() {
         let db = unsafe { *inst.p_ceiling };
         if db.is_finite() && db != inst.last_ceiling {
-            inst.lim.set_ceiling_db(db.clamp(-20.0, 0.0));
+            inst.lim
+                .set_ceiling_db(db.clamp(CEILING_DB.0, CEILING_DB.1));
             inst.last_ceiling = db;
         }
     }
     if !inst.p_release.is_null() {
         let rel = unsafe { *inst.p_release };
         if rel.is_finite() && rel != inst.last_release {
-            inst.lim.set_release_s(rel.clamp(0.01, 2.0), inst.sr);
+            inst.lim
+                .set_release_s(rel.clamp(RELEASE_S.0, RELEASE_S.1), inst.sr);
             inst.last_release = rel;
         }
     }
@@ -300,20 +307,16 @@ static PORT_HINTS: [PortRangeHint; 4] = [
         lower: 0.0,
         upper: 0.0,
     },
-    // Ceiling: -20..0 dB, HIGH -> -1 dB (0.25*-20 + 0.75*0 = -5? no) — see note.
-    // 0.25*lower + 0.75*upper = 0.25*-20 + 0.75*0 = -5 dB default. A -1 dBFS
-    // ceiling is the usual target; callers set it explicitly, the hint is only a
-    // host fallback.
+    // Defaults: -5 dB ceiling, 1.5 s release.
     PortRangeHint {
         hint_descriptor: CTRL | HINT_DEFAULT_HIGH,
-        lower: -20.0,
-        upper: 0.0,
+        lower: CEILING_DB.0,
+        upper: CEILING_DB.1,
     },
-    // Release: 0.01..2 s, HIGH -> 1.5 s. Callers set it explicitly.
     PortRangeHint {
         hint_descriptor: CTRL | HINT_DEFAULT_HIGH,
-        lower: 0.01,
-        upper: 2.0,
+        lower: RELEASE_S.0,
+        upper: RELEASE_S.1,
     },
 ];
 static DESCRIPTOR: Descriptor = Descriptor {
@@ -353,9 +356,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn latency_is_the_lookahead() {
-        let lim = Limiter::new(48_000.0, -1.0, 0.2);
-        assert_eq!(lim.latency(), 144); // 3 ms @ 48 kHz
+    fn the_lookahead_is_3_ms() {
+        assert_eq!(Limiter::new(48_000.0, -1.0, 0.2).look, 144);
+    }
+
+    #[test]
+    fn hint_defaults_are_the_instantiate_defaults() {
+        assert_eq!(default_high(CEILING_DB), -5.0);
+        assert_eq!(default_high(RELEASE_S), 1.5025);
     }
 
     #[test]
@@ -386,15 +394,12 @@ mod tests {
 
     #[test]
     fn sub_ceiling_signal_passes_through_delayed() {
-        // A steady tone well under the ceiling must come out unchanged (unity
-        // gain), just delayed by the lookahead.
         let mut lim = Limiter::new(48_000.0, -1.0, 0.2);
-        let look = lim.latency();
+        let look = lim.look;
         let n = 4096;
         let input: Vec<f32> = (0..n).map(|i| 0.2 * (i as f32 * 0.03).sin()).collect();
         let mut out = vec![0.0f32; n];
         lim.process(&input, &mut out);
-        // After the delay, output equals the delayed input (gain stayed 1.0).
         let mut worst = 0.0f32;
         for i in (look + 100)..n {
             worst = worst.max((out[i] - input[i - look]).abs());
@@ -404,19 +409,15 @@ mod tests {
 
     #[test]
     fn a_transient_is_attenuated_before_it_reaches_the_output() {
-        // The gain must be riding down when the peak arrives (lookahead), so the
-        // limited peak is not just hard-clipped: check the gain envelope engaged
-        // by confirming the pre-peak samples are already scaled below unity.
         let mut lim = Limiter::new(48_000.0, -1.0, 0.5);
         let n = 2048;
-        let look = lim.latency();
+        let look = lim.look;
         let mut input = vec![0.1f32; n]; // quiet steady
         input[1000] = 6.0; // a big transient
         let mut out = vec![0.0f32; n];
         lim.process(&input, &mut out);
-        // The steady 0.1 output around the peak's arrival (index 1000+... wait
-        // output is delayed: the peak lands at output index 1000 + look). Just
-        // before it, the quiet 0.1 input should already be ducked (< 0.1).
+        // The peak leaves the delay line at 1000 + look; the carrier before it is
+        // already attenuated.
         let arrival = 1000 + look;
         let pre = out[arrival - 2];
         assert!(
@@ -424,11 +425,28 @@ mod tests {
             "gain did not pre-duck before the peak: {pre}"
         );
     }
-}
 
-#[cfg(test)]
-mod revision_contract_tests {
-    use super::*;
+    #[test]
+    fn the_gain_ramps_down_over_the_lookahead_instead_of_stepping() {
+        let mut lim = Limiter::new(48_000.0, -1.0, 0.5);
+        let look = lim.look;
+        let mut input = vec![0.1f32; 2048];
+        input[1000] = 6.0;
+        let mut out = vec![0.0f32; input.len()];
+        lim.process(&input, &mut out);
+        // The steady 0.1 carrier shows the gain. Reaching the peak's gain in `look`
+        // equal steps bounds every step by the total drop over `look`.
+        let target = db_to_lin(-1.0) / 6.0;
+        let max_step = 0.1 * (1.0 - target) / look as f32;
+        for i in 999..1000 + look - 1 {
+            let step = (out[i] - out[i + 1]).abs();
+            assert!(
+                step <= max_step * 1.01,
+                "step {step} at {i} exceeds {max_step}"
+            );
+        }
+        assert!(out[1000 + look].abs() <= db_to_lin(-1.0) + 1e-6);
+    }
 
     #[test]
     fn ladspa_in_place_matches_disjoint_buffers() {
@@ -436,7 +454,8 @@ mod revision_contract_tests {
             .map(|i| ((i * 37 % 101) as f32 - 50.0) / 20.0)
             .collect();
         let mut expected = vec![0.0; input.len()];
-        let mut reference = Limiter::new(48_000.0, -1.0, 0.2);
+        let mut reference =
+            Limiter::new(48_000.0, default_high(CEILING_DB), default_high(RELEASE_S));
         reference.process(&input, &mut expected);
         let mut actual = input;
         let handle = instantiate(&DESCRIPTOR, 48_000);
@@ -469,6 +488,11 @@ mod revision_contract_tests {
         for _ in 0..4096 {
             assert!(limiter.process_sample(0.25).is_finite());
         }
+    }
+
+    #[test]
+    fn implausible_sample_rates_are_rejected() {
         assert!(instantiate(&DESCRIPTOR, 0).is_null());
+        assert!(instantiate(&DESCRIPTOR, 1_000_000).is_null());
     }
 }

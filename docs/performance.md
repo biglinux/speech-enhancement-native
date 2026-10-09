@@ -18,7 +18,7 @@ CPU seconds per minute of audio on one core:
 | GTCRN-AEC, 16 kHz streaming core | 1.2 | 7.2 |
 
 Input: one minute of noisy speech at 48 kHz for the denoisers
-(`dfn3_cli`, `ll_cli`, `oldcpu_probe render`) and two minutes of 16 kHz
+(`dfn3_cli`, `dfn3ll_cli`, `dpdfnet-enhance --threads 1`) and two minutes of 16 kHz
 microphone and loopback signals for the AEC (`aec_run` with `AEC_STREAM=1`).
 
 ## Measuring

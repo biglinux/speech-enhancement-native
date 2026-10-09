@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 aec-gtcrn = { path = "../aec-gtcrn" }
+dfn-ops = { path = "../../ops" }

@@ -1,6 +1,5 @@
 //! Fixed DPDFNet2/8-48k-HR topology, matched to Ceva commit 9bd9844a.
 use crate::{layers::*, weights::*};
-use std::sync::Arc;
 pub const FFT: usize = 960;
 pub const HOP: usize = 480;
 pub const BINS: usize = 481;
@@ -252,10 +251,7 @@ impl Output {
 }
 
 pub struct Model {
-    // Retain validated model metadata and the single shared backing allocation.
-    pub bundle: Arc<Bundle>,
-    pub window: F32s,
-    pub wnorm: f32,
+    pub(crate) window: F32s,
     front: Front,
     erb_dual: Dprnn,
     df_dual: Dprnn,
@@ -269,8 +265,7 @@ pub struct Model {
     output: Output,
 }
 impl Model {
-    pub fn new(bundle: Arc<Bundle>) -> Result<Self> {
-        let b = &*bundle;
+    pub fn new(b: &Bundle) -> Result<Self> {
         let parsed = b.manifest()?;
         let m = &parsed;
         require(
@@ -347,9 +342,7 @@ impl Model {
             Ok(l)
         }
         let mut model = Self {
-            bundle: bundle.clone(),
             window,
-            wnorm,
             front: Front {
                 wnorm,
                 alpha,
@@ -411,11 +404,7 @@ impl Model {
                 out: vec![0.0; BINS * 2],
             },
         };
-        // Resolve inherited SIMD dispatch outside run(). No CPUID initialization in callback.
-        #[cfg(target_arch = "x86_64")]
-        let _ = dfn_ops::simd_tier();
-        // Touch every hot-path allocation and initialize math dispatch before exposing the instance.
-        // Warm-up is not measured as throughput and never replaces a real input frame.
+        // Touches every buffer before the first real frame.
         let silence = [0.0f32; BINS * 2];
         require(
             model
@@ -464,7 +453,8 @@ impl Model {
         self.df_decoder.reset();
         self.output.reset();
     }
-    /// Diagnostic snapshots, read after processing from the SAME thread; not a concurrent API.
+    /// The last frame's intermediate values, numbered as in include/dpdfnet_native.h.
+    /// Read from the processing thread.
     pub fn trace(&self, id: usize) -> Option<&[f32]> {
         let front = &self.front;
         match id {

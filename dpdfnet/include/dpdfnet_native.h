@@ -23,7 +23,17 @@ int32_t dpdfnet_native_process(void *handle, const float *input, float *output,
  * Do not mix this diagnostic interface with PCM processing without reset().
  */
 int32_t dpdfnet_native_spectrum(void *handle, const float *input, float *output);
-/* Same thread only. NULL output is a length query. IDs are documented in docs/ARCHITECTURE.md. */
+/* Intermediate values of the last processed frame, for reference comparison.
+ * Same thread only. Returns the length; NULL output is a length query, and
+ * nothing is copied when capacity is smaller. Unknown IDs return 0.
+ *   0 magnitude features   481     7 df1           48x64
+ *   1 complex features     96x2    8 erb_dual      40x64
+ *   2 erb0                 480x64  9 df_dual       48x64
+ *   3 erb1                 160x64  10 embedding    512
+ *   4 erb2                 80x64   11 mask         481
+ *   5 erb3                 40x64   12 coefficients 96x5x2
+ *   6 df0                  96x64   13 spectrum     481x2
+ */
 size_t dpdfnet_native_trace(const void *handle, size_t id, float *output, size_t capacity);
 size_t dpdfnet_native_latency_samples(void);
 #ifdef __cplusplus

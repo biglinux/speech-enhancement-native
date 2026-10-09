@@ -12,7 +12,7 @@ import torch
 from export_model import load_model, TRACE_NAMES
 from native_api import Native
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--lib", type=Path, default=Path("target/release-unwind/libdpdfnet_native.so"))
     p.add_argument("--bundle", type=Path, required=True)
@@ -25,12 +25,16 @@ def main():
     p.add_argument("--report", type=Path, default=Path("comparison.json"))
     a = p.parse_args()
     if a.frames < 8:
-        raise ValueError("Use at least eight frames to exercise delayed paths")
-    manifest = json.loads((a.bundle / "manifest.json").read_text())
-    if hashlib.sha256(a.checkpoint.read_bytes()).hexdigest() != manifest["checkpoint_sha256"]:
-        raise ValueError("Reference and native checkpoint differ")
+        p.error("use at least eight frames to exercise delayed paths")
+    try:
+        manifest = json.loads((a.bundle / "manifest.json").read_text())
+        checkpoint = hashlib.sha256(a.checkpoint.read_bytes()).hexdigest()
+    except (OSError, ValueError) as e:
+        p.error(str(e))
+    if checkpoint != manifest["checkpoint_sha256"]:
+        p.error("reference and native checkpoint differ")
     if manifest["quantization"] != "f32" and not a.quantized_reference:
-        raise ValueError("Use --quantized-reference for W8A16. Comparing against FP32 is a separate quality assessment.")
+        p.error("use --quantized-reference for W8A16; comparing against FP32 is a separate quality assessment")
     torch.set_num_threads(1)
     model = load_model(a.upstream, a.checkpoint, manifest["depth"])
     if a.quantized_reference:
@@ -58,7 +62,11 @@ def main():
     signals[:4] = 0
     rows = [dict(name=name, max_abs=0.0, max_relative_rms=0.0, passed=True) for name in TRACE_NAMES]
     first_failure = None
-    with Native(a.lib, a.bundle) as native, torch.inference_mode():
+    try:
+        native = Native(a.lib, a.bundle)
+    except (OSError, RuntimeError) as e:
+        p.error(str(e))
+    with native, torch.inference_mode():
         for frame, signal in enumerate(signals):
             spectrum = np.fft.rfft(signal).astype(np.complex64)
             packed = np.stack([spectrum.real, spectrum.imag], axis=-1).astype(np.float32)

@@ -1,40 +1,28 @@
-//! Real-time gate: `Daf::process` and `Streamer::process_hop` must not touch the
-//! heap after warm-up; both run on the PipeWire RT thread. A counting
-//! `#[global_allocator]` is armed around a run long enough that a GCC-PHAT update
-//! also fires under the counter.
+//! Real-time gate: `Daf::process` and `Streamer::process_hop` run on the
+//! PipeWire data thread and must not touch the heap after warm-up, also on the
+//! first call from a thread other than the one that built them. A counting
+//! global allocator is armed around runs long enough for a GCC-PHAT update.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use aec_gtcrn::daf::Daf;
-use aec_gtcrn::gguf::Gguf;
 use aec_gtcrn::{Model, Streamer};
 
-// Per-thread counters: the harness runs tests in parallel and the allocator is
-// process-global, so a shared flag would count a sibling test's allocations.
-// Counting only the arming thread's own allocations makes each RT test isolated.
-// `const`-initialised Cells never allocate, so reading them inside `alloc` is safe.
+const HOP: usize = Streamer::HOP;
+
+// Per-thread counters: tests run in parallel and the allocator is global, so
+// only the arming thread's own heap calls count. Const-initialised Cells never
+// allocate, so reading them inside the allocator is safe.
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-}
-
-fn arm(on: bool) {
-    let _ = ARMED.try_with(|a| a.set(on));
-}
-fn allocs() -> usize {
-    ALLOCS.try_with(Cell::get).unwrap_or(0)
-}
-fn reset_allocs() {
-    let _ = ALLOCS.try_with(|c| c.set(0));
+    static HEAP_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 struct Counting;
 impl Counting {
-    #[inline]
     fn note() {
-        let armed = ARMED.try_with(Cell::get).unwrap_or(false);
-        if armed {
-            let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+        if ARMED.try_with(Cell::get).unwrap_or(false) {
+            let _ = HEAP_CALLS.try_with(|c| c.set(c.get() + 1));
         }
     }
 }
@@ -45,6 +33,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        Self::note();
         unsafe { System.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
@@ -56,7 +45,27 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GA: Counting = Counting;
 
-/// Same deterministic mic + far-end reference as `tests/golden.rs::fixed_io`.
+/// Heap calls (allocations, frees, reallocations) made by `f` on this thread.
+fn heap_calls(f: impl FnOnce()) -> usize {
+    HEAP_CALLS.with(|c| c.set(0));
+    ARMED.with(|a| a.set(true));
+    f();
+    ARMED.with(|a| a.set(false));
+    HEAP_CALLS.with(Cell::get)
+}
+
+fn model() -> Model {
+    let path = std::env::var("AEC_GTCRN_GGUF").unwrap_or_else(|_| {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../model/localvqe-pi-aec-v1-49k-f32.gguf"
+        )
+        .into()
+    });
+    Model::load(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// Deterministic echo plus near-end speech stand-in, `n` samples at 16 kHz.
 fn fixed_io(n: usize) -> (Vec<f32>, Vec<f32>) {
     let mut seed = 1234u32;
     let mut rng = || {
@@ -82,88 +91,71 @@ fn fixed_io(n: usize) -> (Vec<f32>, Vec<f32>) {
 
 #[test]
 fn daf_process_is_alloc_free_after_warmup() {
-    let Some(path) = std::env::var("AEC_GTCRN_GGUF")
-        .ok()
-        .filter(|p| std::path::Path::new(p).exists())
-    else {
-        eprintln!("AEC_GTCRN_GGUF unset — skipping RT alloc gate");
-        return;
-    };
-    let gg = Gguf::load(&path).expect("load gguf");
-    let mut daf = Daf::new(&gg).expect("daf");
-    let hop = 128usize; // == M
+    let m = model();
+    let mut daf = Daf::new(&m.w).expect("daf");
+    let block = 128;
     let (mic, reference) = fixed_io(64_000);
-    let mut e = vec![0.0f32; hop];
-    let mut y = vec![0.0f32; hop];
-
-    // Warm past the first GCC-PHAT update (n_seen >= G_WIN = 16384), then arm and
-    // run long enough that gcc_update fires again (G_HOP = 8000) under the counter.
-    let warmup = 200; // 200*128 = 25 600 samples > G_WIN
-    let armed = 200; //  200*128 = 25 600 samples > G_HOP
-    let mut o = 0;
-    for _ in 0..warmup {
-        daf.process(
-            &mic[o..o + hop],
-            &reference[o..o + hop],
-            hop,
-            &mut e,
-            &mut y,
-        );
-        o += hop;
+    let mut e = vec![0.0f32; block];
+    let mut y = vec![0.0f32; block];
+    let mut blocks = mic.chunks_exact(block).zip(reference.chunks_exact(block));
+    // 200 blocks pass the first GCC-PHAT update (16384 samples); the next
+    // 200 contain another one (every 8000 samples).
+    for (mic, reference) in blocks.by_ref().take(200) {
+        daf.process(mic, reference, block, &mut e, &mut y);
     }
-    reset_allocs();
-    arm(true);
-    for _ in 0..armed {
-        daf.process(
-            &mic[o..o + hop],
-            &reference[o..o + hop],
-            hop,
-            &mut e,
-            &mut y,
-        );
-        o += hop;
-    }
-    arm(false);
-    assert_eq!(allocs(), 0, "Daf::process allocated on the RT path");
+    let calls = heap_calls(|| {
+        for (mic, reference) in blocks.take(200) {
+            daf.process(mic, reference, block, &mut e, &mut y);
+        }
+    });
+    assert_eq!(calls, 0, "Daf::process used the heap");
 }
 
-/// Full streaming path (`Streamer::process_hop` = DAF + split-band resampler +
-/// GTCRN core) must be allocation-free on the RT thread after warmup: RT-01 pools
-/// every GTensor and f32 scratch buffer, keeps dims on the stack, and reuses the
-/// output frame, so no hop touches the global allocator.
 #[test]
-fn streaming_process_hop_is_alloc_free_after_warmup() {
-    let Some(path) = std::env::var("AEC_GTCRN_GGUF")
-        .ok()
-        .filter(|p| std::path::Path::new(p).exists())
-    else {
-        eprintln!("AEC_GTCRN_GGUF unset — skipping streaming RT alloc gate");
-        return;
-    };
-    let m = Model::load(&path).expect("load model");
-    let mut s = Streamer::new(&m);
-    let hop = 256usize;
-    let (mic, reference) = fixed_io(hop * 400);
-
-    let warm = 120; // past DAF GCC-PHAT warmup + pool fill
-    let mut o = 0;
-    for _ in 0..warm {
-        s.process_hop(&m, &mic[o..o + hop], &reference[o..o + hop]);
-        o += hop;
+fn process_hop_is_alloc_free_after_warmup() {
+    let m = model();
+    let mut s = Streamer::new(&m).unwrap();
+    let (mic, reference) = fixed_io(HOP * 270);
+    let mut hops = mic.as_chunks().0.iter().zip(reference.as_chunks().0);
+    for (mic, reference) in hops.by_ref().take(120) {
+        s.process_hop(&m, mic, reference);
     }
-    let count = |s: &mut Streamer, o: &mut usize, hops: usize| {
-        reset_allocs();
-        arm(true);
-        for _ in 0..hops {
-            s.process_hop(&m, &mic[*o..*o + hop], &reference[*o..*o + hop]);
-            *o += hop;
+    let calls = heap_calls(|| {
+        for (mic, reference) in hops {
+            s.process_hop(&m, mic, reference);
         }
-        arm(false);
-        allocs()
-    };
-    let a = count(&mut s, &mut o, 50);
-    let b = count(&mut s, &mut o, 100);
-    eprintln!("streaming alloc: {a} over 50 hops, {b} over 100 hops");
-    assert_eq!(a, 0, "Streamer::process_hop allocated on the RT path");
-    assert_eq!(b, 0, "Streamer::process_hop allocated on the RT path");
+    });
+    assert_eq!(calls, 0, "Streamer::process_hop used the heap");
+}
+
+// The plugin builds the streamer on the main thread and PipeWire runs it on the
+// data thread, so its scratch must belong to the instance, not to a thread.
+#[test]
+fn first_hops_on_another_thread_are_alloc_free() {
+    let m = model();
+    let mut s = Streamer::new(&m).unwrap();
+    let (mic, reference) = fixed_io(HOP * 170);
+    for (mic, reference) in mic
+        .as_chunks()
+        .0
+        .iter()
+        .zip(reference.as_chunks().0)
+        .take(120)
+    {
+        s.process_hop(&m, mic, reference);
+    }
+    let calls = std::thread::spawn(move || {
+        let hops = mic.as_chunks().0.iter().zip(reference.as_chunks().0);
+        heap_calls(|| {
+            for (mic, reference) in hops.skip(120) {
+                s.process_hop(&m, mic, reference);
+            }
+        })
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        calls, 0,
+        "process_hop used the heap on its first calls from a new thread"
+    );
 }

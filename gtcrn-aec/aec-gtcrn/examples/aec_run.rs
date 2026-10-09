@@ -31,7 +31,8 @@ fn main() {
         aec_gtcrn::run_aec_stream(&m, &mic, &reference)
     } else {
         aec_gtcrn::run_aec(&m, &mic, &reference)
-    };
+    }
+    .expect("run");
     let elapsed = t0.elapsed().as_secs_f64();
     let audio = n as f64 / 16_000.0;
     eprintln!(
@@ -42,7 +43,6 @@ fn main() {
         audio,
         elapsed / audio,
     );
-    // Buffered: one write per sample cost 17 s of system time per 120 s run.
     let mut f = std::io::BufWriter::new(std::fs::File::create(&a[4]).unwrap());
     for v in out {
         f.write_all(&v.to_le_bytes()).unwrap();

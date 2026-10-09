@@ -11,7 +11,6 @@
 use dfn3ll_ladspa::{Dfn3Ll, HOP};
 
 const NFRAMES: usize = 80;
-static WEIGHTS: &[u8] = include_bytes!("../dfn3ll_weights.bin");
 
 fn fixed_input() -> Vec<f32> {
     let mut seed = 1234u32;
@@ -25,7 +24,7 @@ fn fixed_input() -> Vec<f32> {
 }
 
 fn engine_output() -> Vec<f32> {
-    let mut e = Dfn3Ll::new(WEIGHTS);
+    let mut e = Dfn3Ll::new();
     // Full pipeline (no gating / stage skipping) so all stages run every frame.
     e.min_db = -100.0;
     e.max_db_erb = 100.0;

@@ -6,9 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Read;
 
-// FxHash-style hasher: the streaming forward looks up each weight by name every
-// frame, and SipHash (the std default) showed up in the profile. ~5x faster on
-// short ASCII keys, no dependency.
+// FxHash-style hasher: the streaming forward looks up every weight by name each
+// frame, and on these short ASCII keys this is much cheaper than SipHash.
 #[derive(Default)]
 struct FxHasher(u64);
 impl Hasher for FxHasher {
@@ -266,8 +265,8 @@ impl Gguf {
         Some((&t.data, &t.dims))
     }
 
-    #[must_use]
-    pub fn tensor_names(&self) -> Vec<&str> {
+    #[cfg(test)]
+    pub(crate) fn tensor_names(&self) -> Vec<&str> {
         self.tensors.keys().map(String::as_str).collect()
     }
 }

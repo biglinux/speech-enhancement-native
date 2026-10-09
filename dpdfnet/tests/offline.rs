@@ -1,8 +1,12 @@
-//! DPDFNET_TEST_MODEL=/path cargo test --release --test offline -- --ignored
+//! The offline pipeline against the plugin, with the shipped model or the
+//! bundle in DPDFNET_TEST_MODEL.
 use dpdfnet_native::{audio::LATENCY, offline, AudioProcessor, Bundle};
 fn load() -> std::sync::Arc<Bundle> {
-    Bundle::open(std::env::var_os("DPDFNET_TEST_MODEL").expect("set DPDFNET_TEST_MODEL"))
-        .expect("valid model bundle")
+    let dir = std::env::var_os("DPDFNET_TEST_MODEL").map_or_else(
+        || concat!(env!("CARGO_MANIFEST_DIR"), "/model/dpdfnet2_48khz_hr-w8a16").into(),
+        std::path::PathBuf::from,
+    );
+    Bundle::open(dir).expect("valid model bundle")
 }
 fn signal(n: usize, phase: f32) -> Vec<f32> {
     (0..n)
@@ -38,7 +42,6 @@ fn enhance(input: &[u8], channels: usize, threads: usize) -> Result<Vec<u8>, Str
     Ok(out)
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn matches_the_ladspa_chain_with_any_thread_count() {
     // Not a whole number of hops, long enough for every stage to be busy.
     let channels = [
@@ -57,13 +60,11 @@ fn matches_the_ladspa_chain_with_any_thread_count() {
     }
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn recording_shorter_than_the_lead_in() {
     let x = signal(5_000, 0.0);
     assert_eq!(enhance(&bytes(&x), 1, 4).unwrap(), bytes(&ladspa_chain(&x)));
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn empty_input_and_partial_frames() {
     assert_eq!(enhance(&[], 2, 2).unwrap(), Vec::<u8>::new());
     assert!(enhance(&[0; 12], 2, 2).is_err());

@@ -1,5 +1,5 @@
-//! Register-blocked f32 matvec over wide output tiles, ported from dpdfnet-ops;
-//! every output keeps its per-column reduction order.
+//! Register-blocked f32 matvec over wide output tiles. Every output keeps the
+//! per-column reduction order of the scalar loop.
 use std::arch::x86_64::*;
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn matvec_avx(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {

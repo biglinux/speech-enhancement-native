@@ -1,145 +1,18 @@
 //! High-band linear echo canceller.
 //!
-//! The split-band core (`spa-aec-gtcrn`) runs the neural AEC at 16 kHz and
-//! reinjects the mic's >8 kHz band, which carried echo the core never saw. This
-//! is a **partitioned block frequency-domain adaptive filter** (PBFDAF,
-//! overlap-save, constrained NLMS) that cancels the linear echo in that band
-//! from the loopback reference — a classic linear AEC, no model, no training.
+//! The split-band plugin (`spa-aec-gtcrn`) runs the neural AEC at 16 kHz and
+//! adds back the microphone's band above 8 kHz, which carries echo the network
+//! never sees. This partitioned block frequency-domain adaptive filter
+//! (overlap-save, constrained NLMS) cancels the linear echo in that band from
+//! the loopback reference.
 //!
-//! Runs on the high-band signals (`mic - lpf(mic)`, `ref - lpf(ref)`). The
-//! caller supplies an adaptation permission (`adapt`). A suppression ratio is
-//! not a double-talk detector: a mistaken permission can still damage near-end
-//! speech. Reference statistics must keep following the signal while weights
-//! are frozen, otherwise resuming adaptation uses a stale denominator.
-//!
-//! All scratch lives in the struct and every FFT is an associated function over
-//! disjoint fields, so `process_block` allocates nothing after construction —
-//! the split-band Engine calls it on the real-time path. Self-contained radix-2
-//! FFT so the bit-exact DAF core is untouched.
+//! The caller decides when the weights may adapt (`adapt`); its permission is a
+//! heuristic, not a double-talk detector. Reference power statistics keep
+//! following the signal while the weights are frozen, so resuming adaptation
+//! never uses a stale normaliser. All scratch lives in the struct: after
+//! construction `process_block` does not allocate.
 
-/// Radix-2 in-place complex FFT.
-fn fft(re: &mut [f32], im: &mut [f32], inv: bool, twc: &[f32], tws: &[f32]) {
-    let n = re.len();
-    let mut j = 0usize;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j ^= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let h = len / 2;
-        let stride = n / len;
-        let mut i = 0;
-        while i < n {
-            for k in 0..h {
-                let m = k * stride;
-                let (cr, ci) = (twc[m], if inv { -tws[m] } else { tws[m] });
-                let (ur, ui) = (re[i + k], im[i + k]);
-                let (br, bi) = (re[i + k + h], im[i + k + h]);
-                let (vr, vi) = (br * cr - bi * ci, br * ci + bi * cr);
-                re[i + k] = ur + vr;
-                im[i + k] = ui + vi;
-                re[i + k + h] = ur - vr;
-                im[i + k + h] = ui - vi;
-            }
-            i += len;
-        }
-        len <<= 1;
-    }
-    if inv {
-        let s = 1.0 / n as f32;
-        for v in re.iter_mut() {
-            *v *= s;
-        }
-        for v in im.iter_mut() {
-            *v *= s;
-        }
-    }
-}
-
-fn fill_twiddles(n: usize, twc: &mut [f32], tws: &mut [f32]) {
-    for m in 0..n / 2 {
-        let th = -2.0 * std::f64::consts::PI * m as f64 / n as f64;
-        twc[m] = th.cos() as f32;
-        tws[m] = th.sin() as f32;
-    }
-}
-
-/// Optional, conservative adaptation controller for A/B testing. The aligned
-/// predicted echo and mic are compared; the low-band suppression ratio is NOT
-/// used as a surrogate voice detector. Thresholds below are hypotheses, not
-/// values inherited from WebRTC nor a claim of double-talk safety.
-#[derive(Default)]
-struct AdaptationGuard {
-    mic_power: f64,
-    echo_power: f64,
-    cross: f64,
-    render_power: f64,
-    open: bool,
-    good: usize,
-    hold: usize,
-    bootstrap: usize,
-}
-impl AdaptationGuard {
-    fn step(&mut self, mic: &[f32], render: &[f32], echo: &[f32]) -> f32 {
-        let n = mic.len() as f64;
-        let power = |v: &[f32]| v.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / n;
-        let mp = power(mic);
-        let ep = power(echo);
-        let rp = power(render);
-        let cross = mic
-            .iter()
-            .zip(echo)
-            .map(|(&d, &y)| f64::from(d) * f64::from(y))
-            .sum::<f64>()
-            / n;
-        self.mic_power = 0.9 * self.mic_power + 0.1 * mp;
-        self.echo_power = 0.9 * self.echo_power + 0.1 * ep;
-        self.render_power = 0.9 * self.render_power + 0.1 * rp;
-        self.cross = 0.9 * self.cross + 0.1 * cross;
-        if rp < 1e-10 || self.render_power < 1e-10 {
-            self.open = false;
-            self.good = 0;
-            return 0.0;
-        }
-        // Bootstrap is bounded to ~1 second for the supported 48k/256 case.
-        // It is intentionally a much smaller step, not evidence of no near-end.
-        if self.bootstrap < 188 && self.echo_power < 0.01 * self.mic_power {
-            self.bootstrap += 1;
-            return 0.1;
-        }
-        let coherence = (self.cross.max(0.0).powi(2) / (self.mic_power * self.echo_power + 1e-24))
-            .clamp(0.0, 1.0);
-        // A sudden incoherent onset closes immediately rather than waiting
-        // for the smoothed statistic to absorb a new near-end syllable.
-        let instant = cross.max(0.0).powi(2) / (mp * ep + 1e-24);
-        if coherence < 0.55 || instant < 0.3 {
-            self.open = false;
-            self.good = 0;
-            self.hold = 32;
-        } else if self.hold > 0 {
-            self.hold -= 1;
-        } else if coherence > 0.8 {
-            self.good += 1;
-            if self.good >= 4 {
-                self.open = true;
-            }
-        }
-        if self.open {
-            ((coherence - 0.55) / 0.45) as f32
-        } else {
-            0.0
-        }
-    }
-}
+use crate::fft::{fft_inplace, fill_twiddles};
 
 /// One partitioned block frequency-domain adaptive filter over the high band.
 pub struct HbAec {
@@ -148,8 +21,6 @@ pub struct HbAec {
     bins: usize,
     p: usize,
     mu: f32,
-    guard: Option<AdaptationGuard>,
-    faulted: bool,
     hr: Vec<f32>,
     hi: Vec<f32>,
     xr: Vec<f32>,
@@ -200,8 +71,6 @@ impl HbAec {
             bins,
             p: partitions,
             mu: 0.3,
-            guard: None,
-            faulted: false,
             hr: vec![0.0; pb],
             hi: vec![0.0; pb],
             xr: vec![0.0; pb],
@@ -228,13 +97,15 @@ impl HbAec {
         }
     }
 
-    /// Initialization-only experimental opt-in, intended for the 48k/256 setup.
-    pub fn enable_adaptation_guard(&mut self) {
-        self.guard = Some(AdaptationGuard::default());
-    }
-
-    pub fn is_faulted(&self) -> bool {
-        self.faulted
+    /// Forget the echo path and the reference history without allocating.
+    pub fn reset(&mut self) {
+        self.hr.fill(0.0);
+        self.hi.fill(0.0);
+        self.xr.fill(0.0);
+        self.xi.fill(0.0);
+        self.pw.fill(1e-6);
+        self.norm_pw.fill(1e-6);
+        self.prev_ref.fill(0.0);
     }
 
     /// Real FFT of `x[0..nfft]` → half spectrum `outr/outi[0..bins]`, using
@@ -255,7 +126,7 @@ impl HbAec {
         for v in im[..nfft].iter_mut() {
             *v = 0.0;
         }
-        fft(&mut re[..nfft], &mut im[..nfft], false, twc, tws);
+        fft_inplace(&mut re[..nfft], &mut im[..nfft], false, twc, tws);
         outr[..bins].copy_from_slice(&re[..bins]);
         outi[..bins].copy_from_slice(&im[..bins]);
     }
@@ -279,28 +150,16 @@ impl HbAec {
             re[nfft - k] = br[k];
             im[nfft - k] = -bi[k];
         }
-        fft(&mut re[..nfft], &mut im[..nfft], true, twc, tws);
+        fft_inplace(&mut re[..nfft], &mut im[..nfft], true, twc, tws);
         out[..nfft].copy_from_slice(&re[..nfft]);
     }
 
-    /// Cancel the high-band echo in one block of `b` samples. `adapt` enables
-    /// weight updates (cleared by the caller during near-end / double-talk).
-    /// Writes the echo-removed high band into `out[0..b]`.
+    /// Cancel the high-band echo in one block: `mic`, `refb` and `out` hold
+    /// `block` samples each. `adapt` permits weight updates. A non-finite result
+    /// resets the filter and emits silence for the block.
     pub fn process_block(&mut self, mic: &[f32], refb: &[f32], adapt: bool, out: &mut [f32]) {
         let (b, bins, p, nfft) = (self.b, self.bins, self.p, self.nfft);
-        if self.faulted {
-            out.fill(0.0);
-            return;
-        }
-        if mic.len() != b
-            || refb.len() != b
-            || out.len() != b
-            || mic.iter().chain(refb).any(|v| !v.is_finite())
-        {
-            self.faulted = true;
-            out.fill(0.0);
-            return;
-        }
+        assert!(mic.len() == b && refb.len() == b && out.len() == b);
         // Overlap-save reference block: [prev | current].
         self.xin[..b].copy_from_slice(&self.prev_ref);
         self.xin[b..].copy_from_slice(&refb[..b]);
@@ -353,7 +212,7 @@ impl HbAec {
             out[i] = mic[i] - self.ytime[b + i];
         }
         if out.iter().any(|v| !v.is_finite()) {
-            self.faulted = true;
+            self.reset();
             out.fill(0.0);
             return;
         }
@@ -365,13 +224,6 @@ impl HbAec {
         if energy(out) > 4.0 * energy(mic) {
             out.copy_from_slice(mic);
         }
-        let permission = if let Some(guard) = &mut self.guard {
-            guard.step(mic, refb, &self.ytime[b..])
-        } else if adapt {
-            1.0
-        } else {
-            0.0
-        };
         // Track render statistics even while coefficient updates are frozen.
         // On an onset, EMA alone is about 0.1*current power and can multiply
         // the intended normalized step by almost ten. Cap that amplification
@@ -389,11 +241,11 @@ impl HbAec {
         }
         mean_pw /= bins as f32;
         if !mean_pw.is_finite() || self.norm_pw.iter().any(|v| !v.is_finite()) {
-            self.faulted = true;
+            self.reset();
             out.fill(0.0);
             return;
         }
-        if permission == 0.0 {
+        if !adapt {
             return;
         }
         // E = rfft([0; err]); per-bin reference power over all partitions.
@@ -411,11 +263,9 @@ impl HbAec {
             &self.twc,
             &self.tws,
         );
-        // Regularise by a fraction of the mean reference power, not a fixed floor:
-        // the >8 kHz band carries little energy, so a fixed floor lets bins with
-        // near-zero power take huge NLMS steps and the filter diverges (observed
-        // as amplified near-end on real audio). A dynamic floor + weight leakage
-        // keeps it bounded.
+        // Regularise by a fraction of the mean reference power: the band above
+        // 8 kHz carries little energy, and a fixed floor lets near-empty bins
+        // take huge NLMS steps and diverge. Leakage keeps the weights bounded.
         let eps = (1e-2 * mean_pw).max(1e-6);
         const LEAK: f32 = 0.9995;
         // H_p = LEAK*H_p + mu * conj(X_p) * E / power, then constrain each
@@ -423,7 +273,7 @@ impl HbAec {
         for pi in 0..p {
             let base = pi * bins;
             for k in 0..bins {
-                let norm = (self.mu * permission) / (self.norm_pw[k] + eps);
+                let norm = self.mu / (self.norm_pw[k] + eps);
                 let (xr, xi) = (self.xr[base + k], self.xi[base + k]);
                 let gr = xr * self.er[k] + xi * self.ei[k];
                 let gi = xr * self.ei[k] - xi * self.er[k];
@@ -562,30 +412,16 @@ mod tests {
 }
 
 #[cfg(test)]
-mod guard_tests {
-    use super::*;
+mod fault_tests {
+    use super::HbAec;
     #[test]
-    fn inactive_render_freezes_and_nearend_onset_holds() {
-        let mut guard = AdaptationGuard::default();
-        let signal = [0.01; 256];
-        assert_eq!(guard.step(&signal, &[0.0; 256], &signal), 0.0);
-        for _ in 0..100 {
-            guard.step(&signal, &signal, &signal);
-        }
-        assert!(guard.open);
-        let near: Vec<f32> = (0..256)
-            .map(|i| if i % 2 == 0 { 0.2 } else { -0.2 })
-            .collect();
-        assert_eq!(guard.step(&near, &signal, &signal), 0.0);
-        assert!(!guard.open);
-        assert!(guard.hold > 0);
-    }
-    #[test]
-    fn numerical_fault_does_not_emit_nonfinite_high_band() {
+    fn numerical_fault_resets_and_emits_silence() {
         let mut aec = HbAec::new(256, 8);
         let mut out = [1.0; 256];
         aec.process_block(&[f32::NAN; 256], &[0.0; 256], true, &mut out);
-        assert!(aec.is_faulted());
         assert!(out.iter().all(|v| *v == 0.0));
+        let near = [0.25; 256];
+        aec.process_block(&near, &[0.0; 256], true, &mut out);
+        assert_eq!(out, near, "the filter must recover after a fault");
     }
 }

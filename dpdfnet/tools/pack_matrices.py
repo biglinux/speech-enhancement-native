@@ -37,7 +37,7 @@ def positive_int(value, key, maximum):
     return n
 
 
-def repack_array(weight, unpack=False):
+def repack_array(weight: np.ndarray, unpack: bool = False) -> np.ndarray:
     """Input/output shaped [rows,cols], but packed result's dimensions are opaque."""
     a = np.asarray(weight, dtype=np.int8)
     if a.ndim != 2:
@@ -50,7 +50,7 @@ def repack_array(weight, unpack=False):
     return a.reshape(rows // 8, 8, cols // 2, 2).transpose(0, 2, 1, 3).reshape(rows, cols).copy()
 
 
-def transform(manifest, blob, unpack=False):
+def transform(manifest: dict, blob: bytes, unpack: bool = False) -> tuple[dict, bytes, dict]:
     if manifest.get("schema") not in (1, 2) or manifest.get("architecture") != "dpdfnet-48hr-v1":
         raise ValueError("Unsupported bundle schema/architecture")
     if len(blob) > 64 * 1024 * 1024:
@@ -96,9 +96,7 @@ def transform(manifest, blob, unpack=False):
         if not np.all(np.isfinite(scales) & (scales > 0)):
             raise ValueError(f"Invalid quantization scales at {path}")
         if rows % 8 or cols % 2:
-            if layout == PAIR:
-                raise ValueError(f"Invalid packed geometry at {path}")
-            continue  # Native row fallback remains available for unusual shapes.
+            raise ValueError(f"Rows must be a multiple of eight and columns even at {path}")
         want = ROW if unpack else PAIR
         targets.append((path, item, off, rows, cols, layout, want))
     changed = []
@@ -131,7 +129,7 @@ def transform(manifest, blob, unpack=False):
     return m, bytes(data), result
 
 
-def convert(source: Path, destination: Path, unpack=False):
+def convert(source: Path, destination: Path, unpack: bool = False) -> dict:
     source, destination = source.resolve(), destination.absolute()
     if destination.exists():
         raise FileExistsError(f"Destination exists; use a fresh directory: {destination}")
@@ -157,13 +155,17 @@ def convert(source: Path, destination: Path, unpack=False):
     return report
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--unpack", action="store_true")
     a = p.parse_args()
-    print(json.dumps(convert(a.source, a.output, a.unpack), indent=2))
+    try:
+        report = convert(a.source, a.output, a.unpack)
+    except (OSError, ValueError) as e:
+        p.error(str(e))
+    print(json.dumps(report, indent=2))
 
 if __name__ == "__main__":
     main()

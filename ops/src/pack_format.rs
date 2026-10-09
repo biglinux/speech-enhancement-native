@@ -1,6 +1,7 @@
-//! Pair-output8-v1 container for the two embedded DFN weight sets.
-//! It permutes bytes only; floats, scales, gate rows and biases are untouched.
-//! Build-time and Rust runtime share this parser. Python converter is independent.
+//! `DFNPAIR1` container for the two embedded DeepFilterNet3 weight sets: the int8
+//! GRU matrices reordered into 8-row, 2-column tiles for the packed GEMV. Only
+//! bytes move; floats, scales, gate rows and biases are unchanged. `build.rs` and
+//! the runtime share this parser.
 use std::ops::Range;
 pub const MAGIC: &[u8; 8] = b"DFNPAIR1";
 #[derive(Clone, Copy, Debug)]
@@ -120,7 +121,8 @@ pub fn pack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, Stri
     }
     Ok(dst)
 }
-pub fn unpack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, String> {
+#[cfg(test)]
+pub(crate) fn unpack_matrix(src: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, String> {
     if rows == 0
         || cols == 0
         || !rows.is_multiple_of(8)

@@ -1,0 +1,10 @@
+[package]
+name = "silero-vad"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native Silero VAD and the voice gate the DeepFilterNet3 plugins apply after denoising"
+publish = false
+
+[dependencies]
+dfn-ops = { path = "../ops" }

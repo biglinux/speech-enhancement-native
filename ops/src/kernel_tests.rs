@@ -4,7 +4,7 @@ fn vectors(n: usize) -> Vec<f32> {
         .collect()
 }
 #[test]
-fn quantizer_preserves_legacy_extremes_ties_and_tails() {
+fn simd_quantizer_matches_scalar_on_extremes_ties_and_tails() {
     let mut data = vec![
         0.0,
         -0.0,
@@ -77,38 +77,6 @@ fn packed_products_equal_int128_reference() {
                     assert_eq!(v.to_bits(), y[r].to_bits(), "m={m} n={n} row={r}");
                 }
             }
-        }
-    }
-}
-#[test]
-fn packed_gru_matches_row_major_same_tier() {
-    for h in [64, 256, 512] {
-        let m = 3 * h;
-        let w: Vec<i8> = (0..m * h)
-            .map(|i| ((i * 13 % 255) as i16 - 127) as i8)
-            .collect();
-        let p: Vec<i8> =
-            super::pack_format::pack_matrix(&w.iter().map(|&x| x as u8).collect::<Vec<_>>(), m, h)
-                .unwrap()
-                .into_iter()
-                .map(|x| x as i8)
-                .collect();
-        let s = vec![0.002; m];
-        let b = vectors(6 * h);
-        let mut old = vectors(h);
-        let mut new = old.clone();
-        let mut qa = vec![0; h];
-        let mut qb = qa.clone();
-        let mut a = vec![0.0; 6 * h];
-        let mut c = a.clone();
-        let x = vectors(h);
-        for _ in 0..12 {
-            super::gru_cell_q(&mut old, &x, &w, &s, &w, &s, &b, h, h, &mut a, &mut qa);
-            super::gru_cell_packed(&mut new, &x, &p, &s, &p, &s, &b, h, h, &mut c, &mut qb);
-            assert!(old
-                .iter()
-                .zip(&new)
-                .all(|(a, b)| a.to_bits() == b.to_bits()));
         }
     }
 }

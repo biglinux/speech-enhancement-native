@@ -1,11 +1,11 @@
-//! Recurrent hot path: row-wise W8A16 and 4-frequency weight reuse.
-use crate::weights::{float, num, require, string, Bundle, F32s, I8s, Result};
+//! Matrix, GRU and LayerNorm weights. Batches of four vectors share every int8
+//! weight load.
+use crate::weights::{float, num, require, string, Bundle, F32s, I16s, I8s, Result};
 use serde_json::Value;
 
 #[derive(Clone)]
 enum Storage {
     Float(F32s),
-    Quant(I8s, F32s),
     Packed(I8s, F32s),
 }
 #[derive(Clone)]
@@ -13,14 +13,9 @@ pub struct Matrix {
     pub rows: usize,
     pub cols: usize,
     storage: Storage,
-    matvec4: Matvec4,
-    packed_plan: crate::packed::Plan,
-    recurrent_cache: Option<crate::weights::I16s>,
+    plan: crate::packed::Plan,
+    widened: Option<I16s>,
 }
-/// Dequantized batched GEMV over four contiguous vectors: writes
-/// `out[k*m + r] = sum_r(vector k) * scales[r] * sx[k]` for r in 0..m, k in 0..4.
-/// Loops the rows inside one selected kernel rather than calling `dot4` per row.
-type Matvec4 = fn(&mut [f32], &[i8], &[f32], &[i16], &[f32; 4], usize, usize);
 impl Matrix {
     pub fn load(b: &Bundle, v: &Value) -> Result<Self> {
         let rows = num(v, "rows")?;
@@ -32,88 +27,57 @@ impl Matrix {
         let storage = match string(v, "kind")? {
             "f32" => Storage::Float(b.f32s(&v["weight"], rows * cols)?),
             "w8a16" => {
-                let q = b.i8s(&v["weight"], rows * cols)?;
+                require(
+                    string(v, "layout")? == "pair-output8-v1",
+                    "unknown matrix layout",
+                )?;
+                require(rows % 8 == 0 && cols % 2 == 0, "invalid packed dimensions")?;
                 let scales = b.f32s(&v["scales"], rows)?;
                 require(
                     scales.iter().all(|&s| s > 0.0),
                     "invalid quantization scale",
                 )?;
-                let layout = v
-                    .get("layout")
-                    .and_then(Value::as_str)
-                    .unwrap_or("row-major-v1");
-                match layout {
-                    "pair-output8-v1" => {
-                        require(rows % 8 == 0 && cols % 2 == 0, "invalid packed dimensions")?;
-                        require(b.schema() == 2, "packed layout requires schema 2")?;
-                        Storage::Packed(q, scales)
-                    }
-                    "row-major-v1" => {
-                        if cfg!(not(feature = "scalar-reference")) && rows % 8 == 0 && cols % 2 == 0
-                        {
-                            Storage::Packed(b.packed_i8s(&v["weight"], rows, cols)?, scales)
-                        } else {
-                            Storage::Quant(q, scales)
-                        }
-                    }
-                    _ => return Err("unknown matrix layout".into()),
-                }
+                Storage::Packed(b.i8s(&v["weight"], rows * cols)?, scales)
             }
             _ => return Err("unknown matrix format".into()),
         };
-        let matvec4: Matvec4 = select_matvec4();
         Ok(Self {
             rows,
             cols,
             storage,
-            matvec4,
-            packed_plan: crate::packed::Plan::select(),
-            recurrent_cache: None,
+            plan: crate::packed::Plan::select(),
+            widened: None,
         })
     }
-    pub(crate) fn enable_recurrent_cache(&mut self, b: &Bundle) -> Result<()> {
-        #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
-        if dfn_ops::simd_tier() == 3 && self.rows == 192 && self.cols == 64 {
+    /// Switches a 192x64 int8 matrix to the AVX2 kernel over i16 weights.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn widen(&mut self, b: &Bundle) -> Result<()> {
+        if dpdfnet_ops::simd_tier() == 3 && self.rows == 192 && self.cols == 64 {
             if let Storage::Packed(w, _) = &self.storage {
-                self.recurrent_cache = Some(b.recurrent_cache(w)?);
+                self.widened = Some(b.widened_recurrent(w)?);
             }
         }
-        let _ = b;
         Ok(())
     }
     pub fn apply(&self, x: &[f32], y: &mut [f32], q: &mut [i16]) {
         debug_assert_eq!(x.len(), self.cols);
         debug_assert_eq!(y.len(), self.rows);
         #[cfg(target_arch = "x86_64")]
-        if let (Some(w), Storage::Packed(_, s)) = (&self.recurrent_cache, &self.storage) {
-            let scale = dfn_ops::quantize_i16(x, &mut q[..self.cols]);
-            crate::packed::cached_recurrent_one(y, w, s, &q[..self.cols], scale);
+        if let (Some(w), Storage::Packed(_, s)) = (&self.widened, &self.storage) {
+            let scale = dpdfnet_ops::quantize_i16(x, &mut q[..self.cols]);
+            crate::packed::widened_one(y, w, s, &q[..self.cols], scale);
             return;
         }
         match &self.storage {
             Storage::Float(w) => {
                 for (r, o) in y.iter_mut().enumerate() {
-                    *o = dot_f32(&w[r * self.cols..(r + 1) * self.cols], x);
+                    *o = dpdfnet_ops::vdot_f32(&w[r * self.cols..(r + 1) * self.cols], x);
                 }
             }
             Storage::Packed(w, s) => {
-                let scale = dfn_ops::quantize_i16(x, &mut q[..self.cols]);
-                self.packed_plan
+                let scale = dpdfnet_ops::quantize_i16(x, &mut q[..self.cols]);
+                self.plan
                     .apply(y, w, s, &q[..self.cols], &[scale], self.rows, self.cols, 1);
-            }
-            Storage::Quant(w, s) => {
-                let scale = dfn_ops::quantize_i16(x, &mut q[..self.cols]);
-                #[cfg(not(feature = "scalar-reference"))]
-                dfn_ops::matvec_i8_i16(y, w, s, &q[..self.cols], scale, self.rows, self.cols);
-                #[cfg(feature = "scalar-reference")]
-                for r in 0..self.rows {
-                    let a: i32 = w[r * self.cols..(r + 1) * self.cols]
-                        .iter()
-                        .zip(&q[..self.cols])
-                        .map(|(&a, &b)| a as i32 * b as i32)
-                        .sum();
-                    y[r] = a as f32 * s[r] * scale;
-                }
             }
         }
     }
@@ -125,16 +89,25 @@ impl Matrix {
         let n = self.cols;
         let m = self.rows;
         let mut pos = 0;
-        if matches!(&self.storage, Storage::Quant(..) | Storage::Packed(..)) {
+        if let Storage::Packed(w, s) = &self.storage {
             while pos + 4 <= count {
                 let mut sx = [0.0f32; 4];
                 for k in 0..4 {
-                    sx[k] = dfn_ops::quantize_i16(
+                    sx[k] = dpdfnet_ops::quantize_i16(
                         &x[(pos + k) * n..(pos + k + 1) * n],
                         &mut q[k * n..(k + 1) * n],
                     );
                 }
-                self.apply_quantized_four(&q[..4 * n], &sx, &mut y[pos * m..(pos + 4) * m]);
+                self.plan.apply(
+                    &mut y[pos * m..(pos + 4) * m],
+                    w,
+                    s,
+                    &q[..4 * n],
+                    &sx,
+                    m,
+                    n,
+                    4,
+                );
                 pos += 4;
             }
         }
@@ -149,21 +122,14 @@ impl Matrix {
     }
 
     pub(crate) fn is_quantized(&self) -> bool {
-        matches!(&self.storage, Storage::Quant(..) | Storage::Packed(..))
-    }
-    fn apply_quantized_four(&self, q: &[i16], sx: &[f32; 4], out: &mut [f32]) {
-        match &self.storage {
-            Storage::Quant(w, s) => (self.matvec4)(out, w, s, q, sx, self.rows, self.cols),
-            Storage::Packed(w, s) => self
-                .packed_plan
-                .apply(out, w, s, q, sx, self.rows, self.cols, 4),
-            Storage::Float(_) => unreachable!("prequantization only for integer matrices"),
-        }
+        matches!(&self.storage, Storage::Packed(..))
     }
     /// Consumes already quantized per-frequency vectors. No rounding/scaling is
     /// repeated; each direction keeps its own weights and per-output scales.
     pub(crate) fn batch_prequantized(&self, q: &[i16], sx: &[f32], y: &mut [f32], count: usize) {
-        assert!(self.is_quantized());
+        let Storage::Packed(w, s) = &self.storage else {
+            panic!("prequantized input needs an int8 matrix");
+        };
         assert_eq!(q.len(), count * self.cols);
         assert_eq!(sx.len(), count);
         assert_eq!(y.len(), count * self.rows);
@@ -171,205 +137,30 @@ impl Matrix {
         let m = self.rows;
         let mut pos = 0;
         while pos + 4 <= count {
-            let scales = [sx[pos], sx[pos + 1], sx[pos + 2], sx[pos + 3]];
-            self.apply_quantized_four(
-                &q[pos * n..(pos + 4) * n],
-                &scales,
+            self.plan.apply(
                 &mut y[pos * m..(pos + 4) * m],
+                w,
+                s,
+                &q[pos * n..(pos + 4) * n],
+                &sx[pos..pos + 4],
+                m,
+                n,
+                4,
             );
             pos += 4;
         }
         while pos < count {
-            let out = &mut y[pos * m..(pos + 1) * m];
-            let x = &q[pos * n..(pos + 1) * n];
-            match &self.storage {
-                Storage::Packed(w, s) => self.packed_plan.apply(out, w, s, x, &[sx[pos]], m, n, 1),
-                Storage::Quant(w, s) => {
-                    // Diagnostic tail, also used by scalar-reference. No float reduction.
-                    for r in 0..m {
-                        let mut sum = 0i32;
-                        for j in 0..n {
-                            sum += w[r * n + j] as i32 * x[j] as i32;
-                        }
-                        out[r] = (sum as f32 * s[r]) * sx[pos];
-                    }
-                }
-                Storage::Float(_) => unreachable!(),
-            }
+            self.plan.apply(
+                &mut y[pos * m..(pos + 1) * m],
+                w,
+                s,
+                &q[pos * n..(pos + 1) * n],
+                &sx[pos..pos + 1],
+                m,
+                n,
+                1,
+            );
             pos += 1;
-        }
-    }
-}
-
-#[inline]
-pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(feature = "scalar-reference")]
-    {
-        a.iter().zip(b).map(|(&x, &y)| x * y).sum()
-    }
-    #[cfg(not(feature = "scalar-reference"))]
-    {
-        dfn_ops::vdot_f32(a, b)
-    }
-}
-fn dot4_scalar(w: &[i8], x: &[i16], n: usize) -> [i32; 4] {
-    let mut s = [0i32; 4];
-    for j in 0..n {
-        for k in 0..4 {
-            s[k] += w[j] as i32 * x[k * n + j] as i32;
-        }
-    }
-    s
-}
-// n<=1024, |w|<=127 and |x|<=16383 => every partial and total sum fits i32.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn dot4_avx2(w: &[i8], x: &[i16], n: usize) -> [i32; 4] {
-    use std::arch::x86_64::*;
-    let mut a = [_mm256_setzero_si256(); 4];
-    let end = n & !15;
-    let mut j = 0;
-    while j < end {
-        let ww = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(j).cast()));
-        for (k, acc) in a.iter_mut().enumerate() {
-            let xx = _mm256_loadu_si256(x.as_ptr().add(k * n + j).cast());
-            *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(ww, xx));
-        }
-        j += 16;
-    }
-    let mut s = [0i32; 4];
-    for k in 0..4 {
-        let mut h = _mm_add_epi32(
-            _mm256_castsi256_si128(a[k]),
-            _mm256_extracti128_si256(a[k], 1),
-        );
-        h = _mm_hadd_epi32(h, h);
-        h = _mm_hadd_epi32(h, h);
-        s[k] = _mm_cvtsi128_si32(h);
-        for jj in end..n {
-            s[k] += w[jj] as i32 * x[k * n + jj] as i32;
-        }
-    }
-    s
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn dot4_sse(w: &[i8], x: &[i16], n: usize) -> [i32; 4] {
-    use std::arch::x86_64::*;
-    let mut a = [_mm_setzero_si128(); 4];
-    let end = n & !7;
-    let mut j = 0;
-    while j < end {
-        let ww = _mm_cvtepi8_epi16(_mm_loadl_epi64(w.as_ptr().add(j).cast()));
-        for (k, acc) in a.iter_mut().enumerate() {
-            let xx = _mm_loadu_si128(x.as_ptr().add(k * n + j).cast());
-            *acc = _mm_add_epi32(*acc, _mm_madd_epi16(ww, xx));
-        }
-        j += 8;
-    }
-    let mut s = [0i32; 4];
-    for k in 0..4 {
-        let h = _mm_add_epi32(a[k], _mm_srli_si128(a[k], 8));
-        let h = _mm_add_epi32(h, _mm_srli_si128(h, 4));
-        s[k] = _mm_cvtsi128_si32(h);
-        for jj in end..n {
-            s[k] += w[jj] as i32 * x[k * n + jj] as i32;
-        }
-    }
-    s
-}
-
-fn select_matvec4() -> Matvec4 {
-    #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
-    if !cfg!(feature = "force-sse41")
-        && !cfg!(feature = "force-avx1")
-        && std::is_x86_feature_detected!("avx2")
-    {
-        return matvec4_avx2_checked;
-    }
-    #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
-    if std::is_x86_feature_detected!("sse4.1") {
-        return matvec4_sse_checked;
-    }
-    matvec4_scalar
-}
-fn matvec4_scalar(
-    out: &mut [f32],
-    w: &[i8],
-    scales: &[f32],
-    q4: &[i16],
-    sx: &[f32; 4],
-    m: usize,
-    n: usize,
-) {
-    for r in 0..m {
-        let s = dot4_scalar(&w[r * n..(r + 1) * n], q4, n);
-        for k in 0..4 {
-            out[k * m + r] = s[k] as f32 * scales[r] * sx[k];
-        }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-fn matvec4_avx2_checked(
-    out: &mut [f32],
-    w: &[i8],
-    scales: &[f32],
-    q4: &[i16],
-    sx: &[f32; 4],
-    m: usize,
-    n: usize,
-) {
-    // Selected only after CPUID; same validated integer bounds as `dot4_avx2`.
-    unsafe { matvec4_avx2(out, w, scales, q4, sx, m, n) }
-}
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn matvec4_avx2(
-    out: &mut [f32],
-    w: &[i8],
-    scales: &[f32],
-    q4: &[i16],
-    sx: &[f32; 4],
-    m: usize,
-    n: usize,
-) {
-    // The row loop lives inside this one target-feature function, so `dot4_avx2`
-    // inlines and there is no per-row indirect call or CPUID re-dispatch.
-    for r in 0..m {
-        let s = dot4_avx2(&w[r * n..(r + 1) * n], q4, n);
-        for k in 0..4 {
-            out[k * m + r] = s[k] as f32 * scales[r] * sx[k];
-        }
-    }
-}
-#[cfg(target_arch = "x86_64")]
-fn matvec4_sse_checked(
-    out: &mut [f32],
-    w: &[i8],
-    scales: &[f32],
-    q4: &[i16],
-    sx: &[f32; 4],
-    m: usize,
-    n: usize,
-) {
-    unsafe { matvec4_sse(out, w, scales, q4, sx, m, n) }
-}
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn matvec4_sse(
-    out: &mut [f32],
-    w: &[i8],
-    scales: &[f32],
-    q4: &[i16],
-    sx: &[f32; 4],
-    m: usize,
-    n: usize,
-) {
-    for r in 0..m {
-        let s = dot4_sse(&w[r * n..(r + 1) * n], q4, n);
-        for k in 0..4 {
-            out[k * m + r] = s[k] as f32 * scales[r] * sx[k];
         }
     }
 }
@@ -407,25 +198,7 @@ impl GruWeights {
         })
     }
     pub fn update(&self, wx: &[f32], rh: &[f32], h: &mut [f32]) {
-        #[cfg(not(feature = "scalar-reference"))]
-        dfn_ops::gru_update(h, wx, rh, &self.bias);
-        #[cfg(feature = "scalar-reference")]
-        {
-            let n = self.hidden;
-            for i in 0..n {
-                let z =
-                    1.0 / (1.0 + (-(wx[i] + rh[i] + self.bias[i] + self.bias[3 * n + i])).exp());
-                let r = 1.0
-                    / (1.0
-                        + (-(wx[n + i] + rh[n + i] + self.bias[n + i] + self.bias[4 * n + i]))
-                            .exp());
-                let a = (wx[2 * n + i]
-                    + self.bias[2 * n + i]
-                    + r * (rh[2 * n + i] + self.bias[5 * n + i]))
-                    .tanh();
-                h[i] = (1.0 - z) * a + z * h[i];
-            }
-        }
+        dpdfnet_ops::gru_update(h, wx, rh, &self.bias);
     }
 }
 
@@ -457,47 +230,12 @@ impl LayerNorm {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn four_dots_match_scalar() {
-        for n in [1, 15, 16, 31, 64, 256, 1024] {
-            let w: Vec<i8> = (0..n)
-                .map(|i| (i % 255) as i16 - 127)
-                .map(|v| v as i8)
-                .collect();
-            let x: Vec<i16> = (0..4 * n)
-                .map(|i| ((i * 719) % 32767) as i32 - 16383)
-                .map(|v| v as i16)
-                .collect();
-            let want = dot4_scalar(&w, &x, n);
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                if std::is_x86_feature_detected!("avx2") {
-                    assert_eq!(want, dot4_avx2(&w, &x, n));
-                }
-                if std::is_x86_feature_detected!("sse4.1") {
-                    assert_eq!(want, dot4_sse(&w, &x, n));
-                }
-            }
-        }
-    }
-    #[test]
-    fn quantized_sum_does_not_overflow() {
-        assert!(127i64 * 16383 * 1024 < i32::MAX as i64);
-        let w = vec![127; 1024];
-        let x = vec![16383; 4096];
-        assert_eq!(dot4_scalar(&w, &x, 1024), [127 * 16383 * 1024; 4]);
-    }
-}
-
-#[cfg(test)]
 mod batch_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};
     #[test]
     fn single_batch_and_prequantized_have_identical_bits() {
-        for (m, n) in [(192, 64), (768, 256), (24, 6), (13, 7)] {
+        for (m, n) in [(192, 64), (768, 256), (24, 6)] {
             let mut w = Writer::new();
             let v = w.matrix(m, n, true);
             let b = w.finish();
@@ -518,7 +256,7 @@ mod batch_tests {
                         &mut base[k * m..(k + 1) * m],
                         &mut q,
                     );
-                    scales[k] = dfn_ops::quantize_i16(
+                    scales[k] = dpdfnet_ops::quantize_i16(
                         &x[k * n..(k + 1) * n],
                         &mut full[k * n..(k + 1) * n],
                     );
@@ -530,25 +268,10 @@ mod batch_tests {
             }
         }
     }
-    #[test]
-    fn compatibility_pack_is_shared_once_per_bundle() {
-        let mut w = Writer::new();
-        let v = w.matrix(192, 64, true);
-        let b = w.finish();
-        let _a = Matrix::load(&b, &v).unwrap();
-        let size = b.compatibility_packed_bytes();
-        let _z = Matrix::load(&b, &v).unwrap();
-        assert_eq!(size, b.compatibility_packed_bytes());
-        if cfg!(not(feature = "scalar-reference")) {
-            assert_eq!(size, 192 * 64);
-        } else {
-            assert_eq!(size, 0);
-        }
-    }
 }
 
-#[cfg(test)]
-mod cache_tests {
+#[cfg(all(test, target_arch = "x86_64"))]
+mod widened_tests {
     use super::*;
     use crate::test_support::{assert_bits, Writer};
     #[test]
@@ -558,12 +281,12 @@ mod cache_tests {
         let bundle = writer.finish();
         let base = Matrix::load(&bundle, &desc).unwrap();
         let mut candidate = base.clone();
-        candidate.enable_recurrent_cache(&bundle).unwrap();
+        candidate.widen(&bundle).unwrap();
         let mut second = base.clone();
-        second.enable_recurrent_cache(&bundle).unwrap();
-        #[cfg(all(target_arch = "x86_64", not(feature = "scalar-reference")))]
-        if dfn_ops::simd_tier() == 3 {
-            assert_eq!(bundle.derived_recurrent_bytes(), 192 * 64 * 2);
+        second.widen(&bundle).unwrap();
+        if dpdfnet_ops::simd_tier() == 3 {
+            let (a, b) = (candidate.widened.as_ref(), second.widened.as_ref());
+            assert_eq!(a.unwrap().as_ptr(), b.unwrap().as_ptr());
         }
         let mut q = [0i16; 64];
         let mut want = [0.0; 192];

@@ -28,7 +28,7 @@ def get(url: str, limit: int = 64 * 1024 * 1024) -> bytes:
         raise ValueError("Download exceeds configured size limit")
     return data
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--directory", type=Path, default=Path("inputs"))
     p.add_argument("--depth", choices=(2, 8), type=int, default=2)
@@ -36,6 +36,14 @@ def main():
     p.add_argument("--checkpoint-sha256", help="Optional independently known checkpoint checksum")
     p.add_argument("--source-only", action="store_true")
     a = p.parse_args()
+    if a.hf_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", a.hf_revision):
+        p.error("--hf-revision must be a full 40-character commit SHA")
+    try:
+        fetch(a)
+    except (OSError, ValueError) as e:
+        p.error(str(e))
+
+def fetch(a: argparse.Namespace) -> None:
     upstream = a.directory / "upstream"
     for file, expected in BLOBS.items():
         data = get(f"https://raw.githubusercontent.com/ceva-ip/DPDFNet/{COMMIT}/{file}")

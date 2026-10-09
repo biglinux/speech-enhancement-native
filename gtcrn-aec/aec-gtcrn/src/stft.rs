@@ -24,10 +24,8 @@ fn reflect_pad(sig: &[f32]) -> Vec<f32> {
         return pad;
     }
     if l <= HOP {
-        // Repeated reflect padding, excluding the endpoints. The old direct
-        // indices require l > HOP and panic on otherwise valid 128/256 clips.
-        // This small-input branch bounds period to <= 510, without changing
-        // arithmetic or padding for previously supported input lengths.
+        // Repeated reflect padding, excluding the endpoints: the direct
+        // indices below need l > HOP.
         let period = (2 * (l - 1)) as isize;
         for (i, sample) in pad.iter_mut().enumerate() {
             let k = (i as isize - HOP as isize).rem_euclid(period) as usize;
@@ -90,9 +88,9 @@ pub fn istft_frame(re: &[f32], im: &[f32], icos: &[f32], isin: &[f32], ft: &mut 
 /// The baked matrices are a sine-windowed 512-point real DFT: `wcos = w·cos`,
 /// `wsin = -w·sin`, and the synthesis rows are `w/N` times the Hermitian inverse.
 /// This runs them as a real FFT, ~50x fewer multiply-adds per hop than the two
-/// 257x512 matrix products (the hottest part of the streaming profile). Built only
-/// when the loaded model's matrices match that form, so any other model keeps the
-/// matrix path. Plans and scratch are allocated here, never in the audio callback.
+/// 257x512 matrix products. Built only when the loaded model's matrices match
+/// that form, so any other model keeps the matrix path. Plans and scratch are
+/// allocated here, never in the audio callback.
 pub struct RealFft {
     forward: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
     inverse: std::sync::Arc<dyn realfft::ComplexToReal<f32>>,

@@ -9,10 +9,11 @@
 //! thread count. The recording is preceded by its opening half second played
 //! backwards, the lead-in the converters put in front of the plugin.
 use crate::{
-    audio::{bounded_input, flush_denormals, Analysis, Synthesis, LATENCY},
+    audio::{bounded_input, Analysis, Synthesis, LATENCY},
     model::{Frame, Stage},
     AudioProcessor, Bundle, Result, HOP,
 };
+use dfn_ops::DenormalGuard;
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{ErrorKind, Read, Write},
@@ -122,7 +123,7 @@ fn start_channel<'scope>(
             if let Some(cpu) = cpu {
                 pin(cpu);
             }
-            flush_denormals();
+            let _denormals = DenormalGuard::new();
             while let Ok(hop) = input.recv() {
                 if let Hop::Frame(mut frame) = hop {
                     for stage in &mut stages {
@@ -254,7 +255,7 @@ fn source(
     free: &Receiver<Box<Frame>>,
     first: &SyncSender<Hop>,
 ) -> Result<()> {
-    flush_denormals();
+    let _denormals = DenormalGuard::new();
     let mut spare: Vec<Box<Frame>> = (0..frames).map(|_| Box::default()).collect();
     let mut pending: Vec<f32> = Vec::with_capacity(BLOCK + LEAD_IN + HOP);
     let mut head: Option<Vec<f32>> = Some(Vec::with_capacity(LEAD_IN));

@@ -3,10 +3,8 @@ name = "dpdfnet-ops"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "int8/SIMD numeric kernels for the DPDFNet engine (diverged copy of dfn-ops)"
-
-[dependencies]
-libc = "0.2"
+description = "f32 SIMD kernels and activation quantization of the DPDFNet engine"
+publish = false
 
 [features]
 # Diagnostics: cap the SIMD tier the project kernels select at run time, to

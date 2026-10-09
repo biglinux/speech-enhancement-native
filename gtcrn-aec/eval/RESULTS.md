@@ -1,5 +1,12 @@
-# AEC candidates — quality + resource (16 kHz test set)
+# AEC candidates on a synthetic 16 kHz test set
 
+Produced at commit 9d3ae93 (2026-09-28). The `localvqe_*` rows are the
+LocalVQE ggml CLI running each GGUF over whole files at 16 kHz. They measure
+the network the plugin ports, not the Rust port itself and not the shipped
+plugin, which runs at 48 kHz and adds a separate filter above 8 kHz
+(`docs/gtcrn-aec.md`).
+
+<!-- aggregate:start -->
 ```
          cand | FE-ERLE | DC-ERLE | NE-PESQ | NE-STOI | DT-PESQ | DT-STOI |    RTf | lat_ms | wt_KB
 --------------+---------+---------+---------+---------+---------+---------+--------+--------+------
@@ -13,51 +20,73 @@ localvqe_2.7k |    1.56 |    0.78 |    4.21 |   0.967 |     1.1 |   0.387 | 0.03
  localvqe_49k |   11.48 |    6.41 |    4.25 |   0.961 |    1.11 |   0.443 | 0.0801 |     16 |  2271
 localvqe_200k |    9.32 |   10.68 |     4.2 |   0.967 |    1.04 |   0.368 | 0.3178 |     16 |  2856
 ```
+<!-- aggregate:end -->
 
-FE-ERLE/DC-ERLE: echo removed (dB, higher better) on far-end-only / delay-change.
-NE-*: near-end preservation with no echo (PESQ 1-4.5, STOI 0-1, higher better).
-DT-*: near-end quality during double-talk. RTf: process/audio (<1 = real-time).
-lat_ms: algorithmic frame latency. wt_KB: model weight size.
+- FE-ERLE, DC-ERLE: echo removed, in dB, on the far-end-only and the
+  delay-change scenarios.
+- NE-PESQ, NE-STOI: near-end speech with no echo, against the clean near end
+  (PESQ 1 to 4.5, STOI 0 to 1).
+- DT-PESQ, DT-STOI: the same during double talk.
+- RTf: processing time over audio time, one thread. The CPU was not recorded.
+- lat_ms: the frame or hop length each runner reports, not a measured delay.
+- wt_KB: size of the weight files.
 
-## Method
-Test set built from recorded speech (two speakers) + recorded room noise:
-far-end (loudspeaker) convolved with a synthetic RIR + bulk delay + soft-clip
-loudspeaker nonlinearity → echo; near-end voice + noise. 4 scenarios × 10 s, seeded.
-WebRTC is the *shipped* plugin driven offline through its real SPA `spa_audio_aec`
-interface. SpeexDSP = classic MDF AEC, no residual preprocessor. DTLN-aec and
-LocalVQE run their reference inference (LiteRT / ggml). All candidates scored by the
-same aligned (delay+gain-compensated) PESQ/STOI/ERLE pipeline. Resource numbers are
-16 kHz single-thread; RSS is indicative only (interpreter overhead differs per runner).
+## Test set
+
+`gen_testset.py` builds four 10 s scenarios per rate (16 and 48 kHz) from three
+source clips that the repository does not distribute: far-end speech
+(`--far`), near-end speech from a second speaker (`--near`) and recorded room
+noise (`--noise`), in any format and rate `soundfile` reads. Each clip is tiled
+or trimmed to 10 s and set to -16, -20 and -48 dBFS RMS. The echo is the far
+end through a synthetic exponentially decaying room response (T60 0.35 s), a
+`tanh` soft clip and a 45 ms delay, at -15 dBFS; in `delaychange` the delay
+moves to 95 ms halfway. The seed is fixed, so the same clips give the same set.
+Which clips produced the table was not recorded.
+
+Every candidate's output is aligned in delay and gain to its target before
+`score.py` computes ERLE, PESQ and STOI. WebRTC is the PipeWire plugin
+(`libspa-aec-webrtc.so`) driven through its SPA interface by `run_webrtc.c`;
+SpeexDSP runs without its residual echo suppressor; DTLN-aec runs its
+published LiteRT models.
+
+## Reproduce
+
+Requires Python with numpy, scipy, soundfile, pesq and pystoi, ffmpeg,
+libspeexdsp, the tflite runtime for DTLN, the DTLN-aec pretrained models and a
+LocalVQE CLI build with its GGUFs.
+
+```sh
+T=~/.cache/aec-eval/testset C=~/.cache/aec-eval/cand
+python3 gen_testset.py --far far.wav --near near.wav --noise noise.wav --out $T
+cc -O2 $(pkg-config --cflags libspa-0.2) run_webrtc.c -ldl -o run_webrtc
+mkdir -p $C/webrtc $C/speexdsp $C/dtln_128 $C/localvqe_49k
+python3 run_webrtc.py --bin ./run_webrtc --testset $T --out $C/webrtc > $C/webrtc/res.json
+python3 run_speex.py --testset $T --out $C/speexdsp > $C/speexdsp/res.json
+python3 run_dtln.py --size 128 --models <DTLN-aec>/pretrained_models \
+    --testset $T --out $C/dtln_128 > $C/dtln_128/res.json
+python3 run_localvqe.py --bin <localvqe> --model <localvqe-49k.gguf> \
+    --name localvqe_49k --testset $T --out $C/localvqe_49k > $C/localvqe_49k/res.json
+for c in webrtc speexdsp dtln_128 localvqe_49k; do
+    python3 score.py --testset $T --cand $C/$c --name $c --rates 16000 > $C/$c/score.json
+done
+python3 aggregate.py --cand $C --out RESULTS.md
+```
+
+The other DTLN sizes and LocalVQE models follow the same pattern. The
+`passthrough` row scores the microphone signal as if it were the output; the
+repository has no runner for it.
 
 ## Reading
 
-- **Echo removal:** DTLN dominates (30 dB) ≫ WebRTC (18) > localvqe_49k (11) /
-  localvqe_200k (9) > speex (4) > localvqe_2.7k (~0, it is a front-end filter only).
-- **Your-voice preservation (no echo):** localvqe (all sizes) and passthrough/webrtc/
-  speex are pristine (PESQ ~4.0-4.25). **DTLN colors/attenuates the near-end badly
-  (PESQ 2.35→1.91)** — it is an aggressive suppressor.
-- **Double-talk (both talking):** DTLN best (STOI 0.47-0.50) > localvqe_49k (0.44) >
-  speex (0.40) > passthrough (0.38) > localvqe_200k (0.37) > **webrtc worst (0.30)**.
-- **Cost/latency/size:** webrtc/speex cheapest + lowest latency (10-16 ms).
-  localvqe_49k: RTf 0.08, 16 ms, 2.3 MB. DTLN_128: RTf 0.03 but 32 ms + 7 MB.
+- Echo removal on far end only: DTLN 30 to 31 dB, WebRTC 18.7, localvqe_49k
+  11.5, localvqe_200k 9.3, SpeexDSP 3.9, localvqe_2.7k 1.6.
+- Near end only: every candidate except DTLN stays within 0.2 PESQ of the
+  untouched microphone (4.21); DTLN drops to 1.9 to 2.35.
+- Double talk: PESQ is 1.04 to 1.14 for every candidate, the passthrough
+  included, so it does not separate them. STOI ranges from 0.30 (WebRTC) to
+  0.50 (DTLN 512), with localvqe_49k at 0.44 and the passthrough at 0.38; one
+  10 s clip per scenario cannot resolve differences of a few hundredths.
 
-## No single dominant winner — it is a trade-off
-
-- **DTLN_128** — maximum echo kill + best double-talk, but **degrades the user's own
-  voice** (the opposite of this project's goal) and has the highest latency (32 ms) and
-  weight (7 MB). MIT.
-- **localvqe_49k (GTCRN-AEC)** — **best voice preservation** (PESQ 4.25, does not touch
-  the near-end), beats WebRTC on double-talk, tiny (49 K params → ~sub-MB as W8A16),
-  Apache-2.0, GTCRN = ultralow-compute (fits the i3/i5 goal). Weakness: 11 dB echo
-  removal, below WebRTC's 18 dB.
-- **WebRTC (incumbent)** — solid echo (18) + pristine near-end, but worst double-talk.
-
-## Recommendation
-
-For a *microphone* AEC where preserving the user's own voice is paramount and the
-target is low-resource on i3/i5, **localvqe_49k (GTCRN-AEC)** is the best Rust-port
-candidate: voice-safe, tiny, Apache-2.0, better double-talk than the shipped WebRTC.
-Its lower raw ERLE is acceptable because the product already gates the AEC off when no
-far-end plays, so the near-end-only quality (where localvqe excels) is what a user
-hears most. If raw echo suppression is the priority instead, DTLN is far stronger but
-sacrifices near-end voice quality. SpeexDSP and localvqe_2.7k are not competitive here.
+The plugin uses localvqe_49k: it removes 11.5 dB of echo while scoring like
+the untouched microphone when only the near end speaks. DTLN removes more
+echo but degrades the near-end voice; WebRTC removes more echo (18.7 dB).

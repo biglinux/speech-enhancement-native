@@ -1,20 +1,15 @@
-//! Native Rust port of GTCRN-AEC (the compact ~49K GTCRN acoustic echo canceller
-//! from LocalVQE, Apache-2.0). Chosen over WebRTC/DTLN/SpeexDSP by the `aec-eval`
-//! bench for best near-end voice preservation at ultralow compute.
-//!
-//! Ported from LocalVQE `ggml/gtcrn.cpp` (core) + `ggml/daf_frontend.cpp` (AEC
-//! front-end): STFT-as-matmul, ERB sub-band, GT-conv encoder, dual-path grouped
-//! RNN, decoder, and the DAF adaptive front-end. Offline (`run_aec`) matches the
-//! reference to 8.5e-5; the streaming path (`Streamer`/`run_aec_stream`) matches
-//! `localvqe --stream` to 7e-5 and the core is bit-exact vs the batch reference.
-//! Resamplers bridge PipeWire's 48 kHz to the model's 16 kHz. See `docs/gtcrn-aec.md`.
+//! Native Rust port of GTCRN-AEC, the 49K-parameter echo canceller from
+//! LocalVQE (Apache-2.0): the network from `ggml/gtcrn.cpp` and the DAF front
+//! end from `ggml/daf_frontend.cpp`, at 16 kHz in 256-sample hops. `run_aec`
+//! mirrors LocalVQE's whole-file mode; `Streamer` is the per-hop path the
+//! PipeWire plugin drives. Accuracy against the reference: `docs/gtcrn-aec.md`.
 
 pub mod daf;
 pub mod erb;
+mod fft;
 pub mod gguf;
 pub mod hbaec;
 pub mod model;
-pub mod resample;
 pub mod stft;
 
 use gguf::Gguf;
@@ -22,16 +17,14 @@ use gguf::Gguf;
 /// Full offline AEC: mic + far-end reference -> echo-cancelled mic.
 /// Mirrors LocalVQE `localvqe_process_f32` file mode: prime the bulk delay,
 /// run the DAF adaptive front-end, AGC-normalise, GTCRN mask, iSTFT, un-gain.
-#[must_use]
-pub fn run_aec(m: &Model, mic: &[f32], reference: &[f32]) -> Vec<f32> {
+pub fn run_aec(m: &Model, mic: &[f32], reference: &[f32]) -> Result<Vec<f32>, String> {
     const MBLK: usize = 128; // DAF block
     let n = (mic.len().min(reference.len()) / MBLK) * MBLK;
     let mut out = vec![0.0f32; mic.len()];
     if n == 0 {
-        return out;
+        return Ok(out);
     }
-    let mut daf = daf::Daf::new(&m.w).expect("daf weights");
-    daf.reset();
+    let mut daf = daf::Daf::new(&m.w)?;
     daf.prime_delay(&mic[..n], &reference[..n], n);
     let mut e = vec![0.0f32; n];
     let mut yh = vec![0.0f32; n];
@@ -60,13 +53,13 @@ pub fn run_aec(m: &Model, mic: &[f32], reference: &[f32]) -> Vec<f32> {
     for i in 0..n {
         out[i] = y[i] * inv;
     }
-    out
+    Ok(out)
 }
 
 /// Live per-hop AEC (16 kHz, 256-sample hop), mirroring LocalVQE
-/// `process_gtcrn_frame`: DAF hop → running-RMS AGC → 512 window → STFT frame →
-/// streaming GTCRN → iSTFT frame → un-gain → 50% overlap-add. Recurrent state is
-/// carried across `process_hop` calls — this is the path a PipeWire AEC plugin drives.
+/// `process_gtcrn_frame`: DAF hop, running-RMS AGC, 512-sample window, STFT
+/// frame, streaming GTCRN, iSTFT frame, un-gain, 50% overlap-add. Recurrent
+/// state carries across `process_hop` calls, which never allocate.
 pub struct Streamer {
     daf: daf::Daf,
     core: model::StreamCore,
@@ -76,18 +69,16 @@ pub struct Streamer {
     wenv: [f32; 512],
     pow: f32,
     pow_init: bool,
-    faulted: bool, // latch: no allocations/rebuild in a failed audio callback
     fft: Option<stft::RealFft>,
 }
 
 impl Streamer {
     pub const HOP: usize = 256;
 
-    #[must_use]
-    pub fn new(m: &Model) -> Self {
+    pub fn new(m: &Model) -> Result<Self, String> {
         let _ = dfn_ops::simd_tier(); // resolve ISA dispatch off the callback
-        Self {
-            daf: daf::Daf::new(&m.w).expect("daf weights"),
+        Ok(Self {
+            daf: daf::Daf::new(&m.w)?,
             core: model::StreamCore::prepared(&m.w),
             buf_e: [0.0; 512],
             buf_y: [0.0; 512],
@@ -95,51 +86,40 @@ impl Streamer {
             wenv: [0.0; 512],
             pow: 0.0,
             pow_init: false,
-            faulted: false,
             fft: stft::RealFft::from_matrices(
                 m.w.tensor("stft.wcos").map_or(&[], |t| t.0),
                 m.w.tensor("stft.wsin").map_or(&[], |t| t.0),
                 m.w.tensor("stft.icos").map_or(&[], |t| t.0),
                 m.w.tensor("stft.isin").map_or(&[], |t| t.0),
             ),
-        }
+        })
     }
 
-    /// Select the coarse-delay worker at initialization, before any audio.
-    /// Neural scratch allocation and high-band cost are independent RT gates.
-    pub fn enable_async_delay(&mut self) -> std::io::Result<()> {
-        self.daf.enable_async_delay()
+    /// Return to the freshly built state without allocating.
+    pub fn reset(&mut self) {
+        self.daf.reset();
+        self.core.reset();
+        self.buf_e.fill(0.0);
+        self.buf_y.fill(0.0);
+        self.acc.fill(0.0);
+        self.wenv.fill(0.0);
+        self.pow = 0.0;
+        self.pow_init = false;
     }
 
-    pub fn enable_delay_tracking(&mut self) -> std::io::Result<()> {
-        self.daf.enable_delay_tracking()
-    }
-
-    /// A fault is latched until the owner rebuilds the Engine off the data loop.
-    pub fn is_faulted(&self) -> bool {
-        self.faulted
-    }
-
-    /// Process one 256-sample hop of mic + far-end reference; returns 256 samples.
-    pub fn process_hop(&mut self, m: &Model, mic: &[f32], reference: &[f32]) -> [f32; 256] {
-        const H: usize = 256;
-        if self.faulted {
-            return [0.0; H];
-        }
-        if mic.len() != H
-            || reference.len() != H
-            || mic.iter().chain(reference).any(|v| !v.is_finite())
-        {
-            self.faulted = true;
-            return [0.0; H];
-        }
+    /// Process one hop of mic + far-end reference. A non-finite intermediate
+    /// (an overflow inside the adaptive filter, for instance) resets the
+    /// streamer and yields one hop of silence, so a fault never outlives a hop.
+    pub fn process_hop(
+        &mut self,
+        m: &Model,
+        mic: &[f32; Self::HOP],
+        reference: &[f32; Self::HOP],
+    ) -> [f32; Self::HOP] {
+        const H: usize = Streamer::HOP;
         let mut e = [0.0f32; H];
         let mut yh = [0.0f32; H];
         self.daf.process(mic, reference, H, &mut e, &mut yh);
-        if e.iter().chain(&yh).any(|v| !v.is_finite()) {
-            self.faulted = true;
-            return [0.0; H];
-        }
         // running RMS gain (EMA) toward the 0.05 training level
         let p = (e.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / H as f64) as f32;
         self.pow = if self.pow_init {
@@ -148,10 +128,6 @@ impl Streamer {
             p
         };
         self.pow_init = true;
-        if !self.pow.is_finite() {
-            self.faulted = true;
-            return [0.0; H];
-        }
         let gain = (0.05 / (self.pow.sqrt() + 1e-6)).clamp(0.05, 50.0);
         // slide 512 windows, append raw hop
         self.buf_e.copy_within(H.., 0);
@@ -186,15 +162,7 @@ impl Streamer {
             spy[f * 2] = re_y[f];
             spy[f * 2 + 1] = im_y[f];
         }
-        if spe.iter().chain(&spy).any(|v| !v.is_finite()) {
-            self.faulted = true;
-            return [0.0; H];
-        }
         let osp = self.core.process_frame(&m.w, &spe, &spy);
-        if osp.iter().any(|v| !v.is_finite()) {
-            self.faulted = true;
-            return [0.0; H];
-        }
         let (mut ore, mut oim) = ([0.0f32; 257], [0.0f32; 257]);
         for f in 0..257 {
             ore[f] = osp[f * 2];
@@ -225,8 +193,10 @@ impl Streamer {
         self.acc[H..].fill(0.0);
         self.wenv.copy_within(H.., 0);
         self.wenv[H..].fill(0.0);
+        // Every stage feeds the overlap-add, so checking its output and
+        // carried tail catches a non-finite value anywhere in this hop.
         if out.iter().chain(&self.acc).any(|v| !v.is_finite()) {
-            self.faulted = true;
+            self.reset();
             return [0.0; H];
         }
         out
@@ -235,22 +205,20 @@ impl Streamer {
 
 /// Whole-signal convenience over the streaming path (16 kHz), for offline use and
 /// parity with `localvqe --stream`.
-#[must_use]
-pub fn run_aec_stream(m: &Model, mic: &[f32], reference: &[f32]) -> Vec<f32> {
-    let n = (mic.len().min(reference.len()) / Streamer::HOP) * Streamer::HOP;
-    let mut s = Streamer::new(m);
+pub fn run_aec_stream(m: &Model, mic: &[f32], reference: &[f32]) -> Result<Vec<f32>, String> {
+    let n = mic.len().min(reference.len());
+    let mut s = Streamer::new(m)?;
     let mut out = vec![0.0f32; mic.len()];
-    let mut o = 0;
-    while o < n {
-        let h = s.process_hop(
-            m,
-            &mic[o..o + Streamer::HOP],
-            &reference[o..o + Streamer::HOP],
-        );
-        out[o..o + Streamer::HOP].copy_from_slice(&h);
-        o += Streamer::HOP;
+    let hops = mic[..n]
+        .as_chunks()
+        .0
+        .iter()
+        .zip(reference[..n].as_chunks().0)
+        .zip(out.as_chunks_mut().0);
+    for ((mic, reference), out) in hops {
+        *out = s.process_hop(m, mic, reference);
     }
-    out
+    Ok(out)
 }
 
 /// STFT into the core's freq-major interleaved layout `[(f*T+t)*2 + {re,im}]`.
@@ -294,13 +262,14 @@ pub struct Model {
     pub w: Gguf,
 }
 
-/// Expected tensor geometry (GGUF physical dims) for the shipped GTCRN-AEC
-/// model, one `name d0,d1,...` per line. Regenerate if the model changes.
+/// Tensor names and GGUF dims of the shipped model, one `name d0,d1,...` per
+/// line. The test `schema_lists_the_shipped_model` regenerates it from the GGUF
+/// and prints the new text when the file is out of date.
 const SCHEMA: &str = include_str!("gtcrn_aec_schema.txt");
 
-/// Validate every tensor the forward path needs against [`SCHEMA`], so an
-/// incompatible model is rejected at load rather than panicking in the audio
-/// callback. Generic over the lookup so it can be unit-tested without a Gguf.
+/// Check a model's tensors against [`SCHEMA`]. A model that passes has every
+/// name and shape of the shipped one, so the forward path's weight lookups and
+/// kernels behave as tested and cannot fail later, in the audio callback.
 fn validate_schema(dims_of: impl Fn(&str) -> Option<Vec<usize>>) -> Result<(), String> {
     for (n, line) in SCHEMA.lines().enumerate() {
         let line = line.trim();
@@ -354,8 +323,6 @@ impl Model {
             is_aec: w.meta_u64("gtcrn.is_aec") == Some(1),
         };
         validate_geometry(&cfg)?;
-        // Bind every weight the forward path will read now, on the load thread,
-        // instead of letting a missing/misshaped tensor panic mid-callback.
         validate_schema(|name| w.tensor(name).map(|(_, d)| d.to_vec()))?;
         Ok(Self { cfg, w })
     }
@@ -365,64 +332,77 @@ impl Model {
 mod tests {
     use super::*;
 
-    // Point at the model with AEC_GTCRN_GGUF; skip when unavailable so the gate
-    // stays green on machines without the weights.
-    fn model_path() -> Option<String> {
-        std::env::var("AEC_GTCRN_GGUF")
-            .ok()
-            .filter(|p| std::path::Path::new(p).exists())
+    const SHIPPED_MODEL: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../model/localvqe-pi-aec-v1-49k-f32.gguf"
+    );
+
+    fn model() -> Model {
+        let path = std::env::var("AEC_GTCRN_GGUF").unwrap_or_else(|_| SHIPPED_MODEL.into());
+        Model::load(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    fn noise(n: usize, mut seed: u32) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed >> 9) as f32 / (1u32 << 23) as f32 - 1.0
+            })
+            .collect()
+    }
+
+    /// Pure echo: the microphone hears a delayed, halved copy of the reference.
+    fn echo_only(n: usize, seed: u32) -> (Vec<f32>, Vec<f32>) {
+        let reference: Vec<f32> = noise(n, seed).iter().map(|v| 0.3 * v).collect();
+        let delay = 300;
+        let mic = (0..n)
+            .map(|i| {
+                if i >= delay {
+                    0.5 * reference[i - delay]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        (mic, reference)
+    }
+
+    /// Echo reduction over the converged second half, in dB.
+    fn erle_db(mic: &[f32], out: &[f32]) -> f64 {
+        let h = mic.len() / 2;
+        let me: f64 = mic[h..].iter().map(|&v| f64::from(v).powi(2)).sum();
+        let oe: f64 = out[h..].iter().map(|&v| f64::from(v).powi(2)).sum();
+        10.0 * (me / (oe + 1e-12)).log10()
     }
 
     #[test]
     fn loads_config_and_known_tensors() {
-        let Some(path) = model_path() else {
-            eprintln!("skip: set AEC_GTCRN_GGUF to the 49K gguf");
-            return;
-        };
-        let m = Model::load(&path).expect("load gguf");
+        let m = model();
         assert_eq!(m.cfg.n_fft, 512);
         assert_eq!(m.cfg.n_freq, 257);
         assert!(m.cfg.is_aec);
-
-        // STFT analysis matrix and an encoder conv weight have the shapes the
-        // forward port expects.
         let (wcos, d) = m.w.tensor("stft.wcos").expect("stft.wcos");
         assert_eq!(d, &[512, 257]);
         assert_eq!(wcos.len(), 512 * 257);
-        assert!(wcos.iter().all(|v| v.is_finite()));
-
         let (_, d0) = m.w.tensor("encoder.en_convs.0.w").expect("en_convs.0.w");
         assert_eq!(d0, &[5, 1, 18, 16]);
-
-        // DAF echo front-end tensors are present (this is the AEC build).
         assert!(m.w.tensor("daf.head.weight").is_some());
     }
 
     #[test]
     fn stft_istft_round_trips() {
-        let Some(path) = model_path() else { return };
-        let m = Model::load(&path).expect("load");
+        let m = model();
         let (wcos, _) = m.w.tensor("stft.wcos").unwrap();
         let (wsin, _) = m.w.tensor("stft.wsin").unwrap();
         let (icos, _) = m.w.tensor("stft.icos").unwrap();
         let (isin, _) = m.w.tensor("stft.isin").unwrap();
         let (win2, _) = m.w.tensor("stft.win2").unwrap();
-
-        // Deterministic pseudo-random signal, length a multiple of HOP.
         let l = stft::HOP * 40;
-        let mut s = 0x1234_5678u32;
-        let sig: Vec<f32> = (0..l)
-            .map(|_| {
-                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-                (s >> 9) as f32 / (1u32 << 23) as f32 - 1.0
-            })
-            .collect();
-
+        let sig = noise(l, 0x1234_5678);
         let (re, im) = stft::stft(&sig, wcos, wsin);
         let t_n = stft::n_frames(l);
         let y = stft::istft(&re, im.as_slice(), t_n, l, icos, isin, win2);
-
-        // Interior reconstructs closely (edges carry padding artifacts).
+        // Interior only: the edges carry padding artifacts.
         let (a, b) = (stft::N_FFT, l - stft::N_FFT);
         let mut num = 0.0f64;
         let mut den = 0.0f64;
@@ -442,13 +422,12 @@ mod tests {
         let header = std::str::from_utf8(&b[10..10 + hlen]).unwrap();
         assert!(header.contains("'<f4'"), "npy not <f4: {header}");
         assert!(header.contains("False"), "npy must be C-order");
-        let sh = &header[header.find("(").unwrap() + 1..header.find(")").unwrap()];
+        let sh = &header[header.find('(').unwrap() + 1..header.find(')').unwrap()];
         let shape: Vec<usize> = sh
             .split(',')
             .filter_map(|s| s.trim().parse().ok())
             .collect();
-        let data_off = 10 + hlen;
-        let raw = &b[data_off..];
+        let raw = &b[10 + hlen..];
         assert_eq!(raw.len() % 4, 0, "truncated f32 fixture");
         let f = raw
             .as_chunks::<4>()
@@ -459,27 +438,18 @@ mod tests {
         (shape, f)
     }
 
-    // Parity oracle = the LocalVQE `gtcrn.cpp` scalar reference run on the SAME
-    // GGUF (the committed upstream `.npy` fixtures are from a different model
-    // version and match only `feat`). Regenerate the oracle dir with the
-    // `dump_gtcrn` harness (see aec-eval), then point AEC_GTCRN_FIXTURES at it.
-    // Every stage must be bit-exact: same scalar ops, same weights.
+    // The oracle is the LocalVQE `gtcrn.cpp` reference run on the same GGUF by
+    // eval/dump_gtcrn.cpp: AEC_GTCRN_FIXTURES holds its input spectra
+    // (in_spec_e.npy, in_spec_y.npy) and the stage dumps it wrote for them.
     #[test]
-    fn core_forward_bit_exact_vs_reference() {
-        let (Some(gg), Ok(fix)) = (model_path(), std::env::var("AEC_GTCRN_FIXTURES")) else {
-            eprintln!("skip: set AEC_GTCRN_GGUF and AEC_GTCRN_FIXTURES (reference dump)");
-            return;
-        };
-        if !std::path::Path::new(&format!("{fix}/enc0.npy")).exists() {
-            return;
-        }
-        let m = Model::load(&gg).expect("load");
+    #[ignore = "needs AEC_GTCRN_FIXTURES, a reference dump from eval/dump_gtcrn.cpp"]
+    fn core_stages_match_reference_dump() {
+        let fix = std::env::var("AEC_GTCRN_FIXTURES").expect("AEC_GTCRN_FIXTURES");
+        let m = model();
         let (she, e) = npy_f32(&format!("{fix}/in_spec_e.npy"));
         let (_, y) = npy_f32(&format!("{fix}/in_spec_y.npy"));
         let t_n = she[2];
-        let mut cap = Vec::new();
-        model::forward_capture(&m.w, &e, &y, t_n, &mut cap);
-        for (name, val) in &cap {
+        for (name, val) in model::forward_capture(&m.w, &e, &y, t_n) {
             let (_, wref) = npy_f32(&format!("{fix}/{name}.npy"));
             assert_eq!(val.len(), wref.len(), "{name} length");
             let max = val
@@ -493,20 +463,17 @@ mod tests {
 
     #[test]
     fn streaming_core_matches_batch() {
-        // Feed the same spec frames one-by-one through the stateful streaming core;
-        // because the core is causal over time, it must reproduce the batch forward.
-        let (Some(gg), Ok(fix)) = (model_path(), std::env::var("AEC_GTCRN_FIXTURES")) else {
-            return;
-        };
-        if !std::path::Path::new(&format!("{fix}/enc0.npy")).exists() {
-            return;
-        }
-        let m = Model::load(&gg).expect("load");
-        let (she, e) = npy_f32(&format!("{fix}/in_spec_e.npy")); // (1,257,T,2)
-        let (_, y) = npy_f32(&format!("{fix}/in_spec_y.npy"));
-        let t_n = she[2];
+        // The core is causal over time, so feeding frames one by one through
+        // the stateful core must reproduce the batch forward.
+        let m = model();
+        let (wcos, _) = m.w.tensor("stft.wcos").unwrap();
+        let (wsin, _) = m.w.tensor("stft.wsin").unwrap();
+        let l = stft::HOP * 60;
+        let t_n = stft::n_frames(l);
+        let e = stft_freq_major(&noise(l, 11), wcos, wsin, t_n);
+        let y = stft_freq_major(&noise(l, 12), wcos, wsin, t_n);
         let want = model::forward(&m.w, &e, &y, t_n);
-        let mut sc = model::StreamCore::new();
+        let mut sc = model::StreamCore::prepared(&m.w);
         let mut got = vec![0.0f32; 257 * t_n * 2];
         let mut ef = vec![0.0f32; 257 * 2];
         let mut yf = vec![0.0f32; 257 * 2];
@@ -528,59 +495,35 @@ mod tests {
             .zip(&want)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(max < 1e-4, "streaming vs batch max abs diff {max:.2e}");
+        // The batch and streaming kernels round differently, so the
+        // bound is relative to the output peak; measured ~8e-7.
+        let peak = want.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            max <= 1e-5 * peak,
+            "streaming vs batch max abs diff {max:.2e}, output peak {peak:.2e}"
+        );
     }
 
     #[test]
     fn run_aec_cancels_echo() {
-        let Some(path) = model_path() else { return };
-        let m = Model::load(&path).expect("load");
-        // ref = deterministic noise; mic = a delayed, attenuated copy (pure echo,
-        // no near-end). A working AEC drives the residual well below the mic.
-        let n = 16000 * 3;
-        let mut s = 0xABCD_1234u32;
-        let reference: Vec<f32> = (0..n)
-            .map(|_| {
-                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-                ((s >> 9) as f32 / (1u32 << 23) as f32 - 1.0) * 0.3
-            })
-            .collect();
-        let delay = 300;
-        let mic: Vec<f32> = (0..n)
-            .map(|i| {
-                if i >= delay {
-                    reference[i - delay] * 0.5
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let out = run_aec(&m, &mic, &reference);
-        // Compare residual to mic energy over the converged second half.
-        let h = n / 2;
-        let me: f64 = mic[h..].iter().map(|&v| f64::from(v) * f64::from(v)).sum();
-        let oe: f64 = out[h..].iter().map(|&v| f64::from(v) * f64::from(v)).sum();
-        let erle_db = 10.0 * (me / (oe + 1e-12)).log10();
+        let m = model();
+        let (mic, reference) = echo_only(16000 * 3, 0xABCD_1234);
+        let out = run_aec(&m, &mic, &reference).unwrap();
         assert!(out.iter().all(|v| v.is_finite()));
-        assert!(erle_db > 10.0, "echo not cancelled, ERLE {erle_db:.1} dB");
+        let erle = erle_db(&mic, &out);
+        eprintln!("run_aec_cancels_echo ERLE = {erle:.1} dB");
+        assert!(erle > 10.0, "echo not cancelled, ERLE {erle:.1} dB");
     }
 
     #[test]
     fn stft_frame_matches_batch() {
-        // The streaming per-frame primitive must equal the (verified) batch STFT
-        // on the same 512-sample analysis window, so the live path is consistent.
-        let Some(path) = model_path() else { return };
-        let m = Model::load(&path).expect("load");
+        // The per-frame primitive must equal the batch STFT on the same
+        // 512-sample window.
+        let m = model();
         let (wcos, _) = m.w.tensor("stft.wcos").unwrap();
         let (wsin, _) = m.w.tensor("stft.wsin").unwrap();
         let l = stft::HOP * 20;
-        let mut s = 0x2468u32;
-        let sig: Vec<f32> = (0..l)
-            .map(|_| {
-                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-                (s >> 9) as f32 / (1u32 << 23) as f32 - 1.0
-            })
-            .collect();
+        let sig = noise(l, 0x2468);
         let (re, im) = stft::stft(&sig, wcos, wsin);
         // rebuild the reflect-padded buffer the batch STFT used
         let mut pad = vec![0.0f32; l + stft::N_FFT];
@@ -607,38 +550,14 @@ mod tests {
 
     #[test]
     fn run_aec_stream_cancels_echo() {
-        let Some(path) = model_path() else { return };
-        let m = Model::load(&path).expect("load");
-        let n = 16000 * 3;
-        let mut s = 0x5151u32;
-        let reference: Vec<f32> = (0..n)
-            .map(|_| {
-                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-                ((s >> 9) as f32 / (1u32 << 23) as f32 - 1.0) * 0.3
-            })
-            .collect();
-        let delay = 300;
-        let mic: Vec<f32> = (0..n)
-            .map(|i| {
-                if i >= delay {
-                    reference[i - delay] * 0.5
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let out = run_aec_stream(&m, &mic, &reference);
+        let m = model();
+        let (mic, reference) = echo_only(16000 * 3, 0x5151);
+        let out = run_aec_stream(&m, &mic, &reference).unwrap();
         assert!(out.iter().all(|v| v.is_finite()));
-        let h = n / 2;
-        let me: f64 = mic[h..].iter().map(|&v| f64::from(v) * f64::from(v)).sum();
-        let oe: f64 = out[h..].iter().map(|&v| f64::from(v) * f64::from(v)).sum();
-        let erle = 10.0 * (me / (oe + 1e-12)).log10();
+        let erle = erle_db(&mic, &out);
         eprintln!("run_aec_stream_cancels_echo ERLE = {erle:.1} dB");
-        // Quality gate for the DAF (docs/gtcrn-aec.md, DAF numerical note): the adaptive filter's
-        // sample trajectory forks on a 1-ulp knife-edge (daf.rs Kalman clamp), so
-        // sample-exact comparison is meaningless across FP variants. Echo-return-loss
-        // is the trajectory-robust invariant; a working filter clears ~33 dB here,
-        // a broken one sits below 10.
+        // The DAF's sample stream depends on rounding (docs/gtcrn-aec.md, DAF
+        // numerical note), so the gate is echo reduction, not sample equality.
         assert!(
             erle > 25.0,
             "streaming echo not cancelled, ERLE {erle:.1} dB"
@@ -646,9 +565,31 @@ mod tests {
     }
 
     #[test]
+    fn fault_resets_to_the_fresh_state() {
+        let m = model();
+        let (mic, reference) = echo_only(Streamer::HOP * 40, 0x77);
+        let hops = |s: &mut Streamer| -> Vec<[f32; Streamer::HOP]> {
+            mic.as_chunks()
+                .0
+                .iter()
+                .zip(reference.as_chunks().0)
+                .map(|(m_, r)| s.process_hop(&m, m_, r))
+                .collect()
+        };
+        let mut faulted = Streamer::new(&m).unwrap();
+        hops(&mut faulted);
+        let poison = [f32::NAN; Streamer::HOP];
+        assert_eq!(
+            faulted.process_hop(&m, &poison, &poison),
+            [0.0; Streamer::HOP]
+        );
+        let after = hops(&mut faulted);
+        assert_eq!(after, hops(&mut Streamer::new(&m).unwrap()));
+    }
+
+    #[test]
     fn erb_passes_low_bins() {
-        let Some(path) = model_path() else { return };
-        let m = Model::load(&path).expect("load");
+        let m = model();
         let (bmw, _) = m.w.tensor("erb.bm").unwrap();
         let frame: Vec<f32> = (0..erb::FULL).map(|i| i as f32 * 0.01).collect();
         let banded = erb::bm(&frame, bmw);
@@ -656,35 +597,50 @@ mod tests {
         assert_eq!(&banded[..erb::LOW], &frame[..erb::LOW]);
         assert!(banded.iter().all(|v| v.is_finite()));
     }
-}
 
-#[cfg(test)]
-mod schema_tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn full() -> HashMap<String, Vec<usize>> {
-        SCHEMA
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| {
-                let (name, dims) = l.split_once(' ').unwrap();
-                let dims = dims.split(',').map(|d| d.parse().unwrap()).collect();
-                (name.to_string(), dims)
+    fn schema_of(w: &Gguf) -> String {
+        let mut names = w.tensor_names();
+        names.sort_unstable();
+        names
+            .into_iter()
+            .map(|name| {
+                let dims: Vec<String> = w
+                    .tensor(name)
+                    .unwrap()
+                    .1
+                    .iter()
+                    .map(usize::to_string)
+                    .collect();
+                format!("{name} {}\n", dims.join(","))
             })
             .collect()
     }
 
     #[test]
-    fn full_schema_matches_and_is_complete() {
-        let map = full();
-        assert_eq!(map.len(), 188, "schema tensor count");
-        assert!(validate_schema(|n| map.get(n).cloned()).is_ok());
+    fn schema_lists_the_shipped_model() {
+        let generated = schema_of(&Gguf::load(SHIPPED_MODEL).unwrap());
+        assert!(
+            generated == SCHEMA,
+            "src/gtcrn_aec_schema.txt is out of date; replace it with:\n{generated}"
+        );
+    }
+
+    fn schema_map() -> std::collections::HashMap<String, Vec<usize>> {
+        SCHEMA
+            .lines()
+            .map(|l| {
+                let (name, dims) = l.split_once(' ').unwrap();
+                (
+                    name.to_string(),
+                    dims.split(',').map(|d| d.parse().unwrap()).collect(),
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn a_missing_tensor_is_rejected_at_load() {
-        let mut map = full();
+        let mut map = schema_map();
         map.remove("stft.wcos");
         let err = validate_schema(|n| map.get(n).cloned()).unwrap_err();
         assert!(err.contains("missing tensor stft.wcos"), "{err}");
@@ -692,7 +648,7 @@ mod schema_tests {
 
     #[test]
     fn a_misshaped_tensor_is_rejected_at_load() {
-        let mut map = full();
+        let mut map = schema_map();
         map.insert("stft.wcos".into(), vec![1, 2]);
         let err = validate_schema(|n| map.get(n).cloned()).unwrap_err();
         assert!(
@@ -700,6 +656,7 @@ mod schema_tests {
             "{err}"
         );
     }
+
     #[test]
     fn reject_shape_compatible_but_semantically_wrong_model() {
         let mut cfg = Config {

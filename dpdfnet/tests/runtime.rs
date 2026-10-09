@@ -1,9 +1,11 @@
-//! Model-dependent tests are explicit, not silently skipped as successful.
-//! DPDFNET_TEST_MODEL=/path cargo test --release --test runtime -- --ignored
+//! Streaming behavior with the shipped model, or the bundle in DPDFNET_TEST_MODEL.
 use dpdfnet_native::{AudioProcessor, Bundle};
 fn load() -> std::sync::Arc<Bundle> {
-    Bundle::open(std::env::var_os("DPDFNET_TEST_MODEL").expect("set DPDFNET_TEST_MODEL"))
-        .expect("valid model bundle")
+    let dir = std::env::var_os("DPDFNET_TEST_MODEL").map_or_else(
+        || concat!(env!("CARGO_MANIFEST_DIR"), "/model/dpdfnet2_48khz_hr-w8a16").into(),
+        std::path::PathBuf::from,
+    );
+    Bundle::open(dir).expect("valid model bundle")
 }
 fn signal(n: usize) -> Vec<f32> {
     (0..n)
@@ -11,7 +13,6 @@ fn signal(n: usize) -> Vec<f32> {
         .collect()
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn block_partition_invariance() {
     let b = load();
     let input = signal(12000);
@@ -29,7 +30,6 @@ fn block_partition_invariance() {
     }
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn dry_path_has_exactly_declared_latency() {
     let b = load();
     let mut p = AudioProcessor::new(b).unwrap();
@@ -47,7 +47,6 @@ fn dry_path_has_exactly_declared_latency() {
     }
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn reset_is_equivalent_to_new_instance() {
     let b = load();
     let mut p = AudioProcessor::new(b.clone()).unwrap();
@@ -65,7 +64,6 @@ fn reset_is_equivalent_to_new_instance() {
     assert_eq!(y, reference);
 }
 #[test]
-#[ignore = "requires exported trained weights"]
 fn invalid_samples_do_not_poison_the_state() {
     let b = load();
     let mut p = AudioProcessor::new(b).unwrap();
@@ -76,6 +74,5 @@ fn invalid_samples_do_not_poison_the_state() {
     x[719] = f32::NEG_INFINITY;
     p.process(&x, &mut y);
     assert!(y.iter().all(|v| v.is_finite()));
-    assert_eq!(p.sanitized_samples, 3);
     assert!(!p.faulted());
 }

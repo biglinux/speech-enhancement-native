@@ -38,12 +38,13 @@ impl Writer {
     pub(crate) fn matrix(&mut self, rows: usize, cols: usize, quant: bool) -> Value {
         if quant {
             let offset = self.bytes.len();
-            for i in 0..rows * cols {
-                self.bytes
-                    .push((((i * 71 + 17) % 255) as i16 - 127) as i8 as u8);
-            }
+            let w: Vec<i8> = (0..rows * cols)
+                .map(|i| (((i * 71 + 17) % 255) as i16 - 127) as i8)
+                .collect();
+            self.bytes
+                .extend(pack_rows(&w, rows, cols).iter().map(|&v| v as u8));
             let scales = self.floats(&vec![0.0002; rows]);
-            json!({"kind":"w8a16", "rows":rows,"cols":cols,
+            json!({"kind":"w8a16", "rows":rows,"cols":cols, "layout":"pair-output8-v1",
                 "weight":{"dtype":"i8","offset":offset,"len":rows*cols},"scales":scales})
         } else {
             let weight = self.random_floats(rows * cols);
@@ -79,10 +80,23 @@ impl Writer {
                "fc_intra":fc_intra,"fc_inter":fc_inter,"ln_intra":ln_intra,"ln_inter":ln_inter})
     }
     pub(crate) fn finish(self) -> Arc<Bundle> {
-        let m = json!({"schema":1,"architecture":"dpdfnet-48hr-v1",
+        let m = json!({"schema":2,"architecture":"dpdfnet-48hr-v1",
             "weight_bytes":self.bytes.len(), "weights_sha256":format!("{:x}",Sha256::digest(&self.bytes))});
         Bundle::from_bytes(&serde_json::to_vec(&m).unwrap(), &self.bytes).unwrap()
     }
+}
+/// Row-major `[rows, cols]` to the pair-output8-v1 layout of tools/pack_matrices.py.
+pub(crate) fn pack_rows(w: &[i8], rows: usize, cols: usize) -> Vec<i8> {
+    assert!(rows > 0 && rows.is_multiple_of(8) && cols > 0 && cols.is_multiple_of(2));
+    assert_eq!(w.len(), rows * cols);
+    let mut packed = vec![0i8; w.len()];
+    for r in 0..rows {
+        for j in 0..cols {
+            let dst = (r / 8) * (8 * cols) + (j / 2) * 16 + (r % 8) * 2 + j % 2;
+            packed[dst] = w[r * cols + j];
+        }
+    }
+    packed
 }
 pub(crate) fn assert_bits(got: &[f32], want: &[f32]) {
     assert_eq!(got.len(), want.len());

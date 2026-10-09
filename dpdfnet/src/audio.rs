@@ -1,31 +1,13 @@
 //! Mono 48 kHz streaming adapter. Arbitrary host block sizes, including in-place.
 //! Two-hop framing delay + four-hop model delay = 2880 samples (60 ms).
-use crate::{Bundle, Model, Result, BINS, FFT, HOP, MODEL_DELAY};
+use crate::{
+    model::{Model, BINS, FFT, HOP, MODEL_DELAY},
+    Bundle, Result,
+};
 use realfft::{num_complex::Complex32, ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 pub const LATENCY: usize = (2 + MODEL_DELAY) * HOP;
 
-/// Flush-to-zero + denormals-are-zero on the calling (real-time) thread. The
-/// recurrent FP32 state decays toward denormal magnitudes when the input goes
-/// quiet; without FTZ/DAZ, denormal arithmetic on x86 is 10-100x slower and
-/// produces multi-millisecond hop spikes (xruns) during silence. MXCSR is
-/// per-thread, so every real-time entry point (LADSPA `run`, the C `process`)
-/// sets it. Idempotent and cheap; left set for the thread by design.
-#[inline]
-pub(crate) fn flush_denormals() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::arch::asm;
-        // FTZ = bit 15 (0x8000), DAZ = bit 6 (0x0040). stmxcsr/ldmxcsr rather than
-        // the deprecated _mm_{get,set}csr intrinsics.
-        let mut csr: u32 = 0;
-        unsafe {
-            asm!("stmxcsr [{p}]", p = in(reg) &mut csr, options(nostack, preserves_flags));
-            csr |= 0x8040;
-            asm!("ldmxcsr [{p}]", p = in(reg) &csr, options(nostack, readonly, preserves_flags));
-        }
-    }
-}
 /// Windowed FFT of the newest hop over the one before it.
 pub(crate) struct Analysis {
     fft: Arc<dyn RealToComplex<f32>>,
@@ -146,7 +128,7 @@ pub(crate) fn bounded_input(x: f32) -> f32 {
 }
 
 pub struct AudioProcessor {
-    pub model: Model,
+    pub(crate) model: Model,
     analysis: Analysis,
     synthesis: Synthesis,
     pending_in: Vec<f32>,
@@ -157,16 +139,12 @@ pub struct AudioProcessor {
     last_control: f32,
     mix_step: f32,
     fault: bool,
-    pub hops: u64,
-    pub sanitized_samples: u64,
 }
 impl AudioProcessor {
     pub fn new(bundle: Arc<Bundle>) -> Result<Self> {
-        let model = Model::new(bundle)?;
+        let model = Model::new(&bundle)?;
         let analysis = Analysis::new(&model.window)?;
         let synthesis = Synthesis::new(&model.window)?;
-        // Resolve the dB conversion's libm path outside a future control-change callback.
-        let _ = std::hint::black_box(dfn_ops::atten_lim_from_db(std::hint::black_box(12.0)));
         Ok(Self {
             model,
             analysis,
@@ -179,8 +157,6 @@ impl AudioProcessor {
             last_control: 100.0,
             mix_step: 1.0 / 5.0,
             fault: false,
-            hops: 0,
-            sanitized_samples: 0,
         })
     }
     /// The parts of a processor fresh from `reset`, for the offline pipeline.
@@ -196,7 +172,7 @@ impl AudioProcessor {
             100.0
         };
         if db != self.last_control {
-            self.target_mix = dfn_ops::atten_lim_from_db(db);
+            self.target_mix = dpdfnet_ops::atten_lim_from_db(db);
             self.last_control = db;
         }
     }
@@ -209,18 +185,18 @@ impl AudioProcessor {
         self.position = 0;
         self.dry_mix = self.target_mix;
         self.fault = false;
-        self.hops = 0;
-        self.sanitized_samples = 0;
     }
     pub fn faulted(&self) -> bool {
         self.fault
     }
+    /// Silence until `reset`, after a panic left the state unknown.
+    pub(crate) fn latch_fault(&mut self) {
+        self.fault = true;
+        self.pending_out.fill(0.0);
+    }
     /// One sample in/out is intentional: block partition invariance without queues or growth paths.
     #[inline]
     pub fn sample(&mut self, x: f32) -> f32 {
-        if !x.is_finite() {
-            self.sanitized_samples = self.sanitized_samples.saturating_add(1);
-        }
         let y = self.pending_out[self.position];
         self.pending_in[self.position] = bounded_input(x);
         self.position += 1;
@@ -249,8 +225,6 @@ impl AudioProcessor {
         }
         if self.fault {
             self.pending_out.fill(0.0);
-        } else {
-            self.hops = self.hops.saturating_add(1);
         }
     }
     fn enhance_hop(&mut self) -> bool {

@@ -86,11 +86,8 @@ vector, rounded half away from zero like `f32::round`. `127·16383·1024 <
 INT32_MAX`, so no accumulator can overflow. Convolutions, other projections,
 states, normalizations and gates stay in f32. When the reciprocal of a tiny
 activation scale overflows f32, the quantizer divides instead, or writes zeros
-if the scale itself rounds to zero.
-
-The `scalar-reference` feature swaps in scalar transcendental functions to find
-divergences. f32 PyTorch, scalar and SIMD are not bit-identical; the integer
-matrix products are.
+if the scale itself rounds to zero. f32 PyTorch and the SIMD kernels are not
+bit-identical; the integer matrix products are, on every SIMD tier.
 
 ## Deep-filter decoder and delays
 
@@ -121,18 +118,21 @@ filters come on top.
 Splitting the same input into blocks of 1, 7, 64, 128, 256, 480, 512, 960, 1024
 or 8192 samples gives identical output. Attenuation 0 dB is the aligned dry
 signal, 100 dB full enhancement; changes are smoothed over up to five hops and
-every frame is still inferred. NaN/Inf input is replaced by zero and counted. An
-FFT error or non-finite result sets the `Processing fault` port and outputs
-silence until reset; the plugin never falls back to raw audio.
+every frame is still inferred. NaN/Inf input is replaced by zero. An FFT error,
+a non-finite result or a panic sets the `Processing fault` port and outputs
+silence until reset; the plugin never falls back to raw audio, and no panic
+unwinds into the host.
 
 ## Memory and threads
 
 One aligned allocation holds the weights; tensors are `Arc` views into it. The
 file is read, not mapped. int8 matrices are never expanded to f32. Instances in
 one process share the weights through a weak cache whose mutex is only taken in
-instantiate and cleanup. State and scratch buffers belong to each instance. The
-plugin does not change the host's floating-point environment. Warm-up touches
-the buffers and resolves the SIMD dispatch before the first `run`.
+instantiate and cleanup. State and scratch buffers belong to each instance. `run`
+enables flush-to-zero and denormals-are-zero, so silence decaying through the
+recurrent state stays fast, and restores the host's MXCSR before returning.
+Warm-up touches the buffers and resolves the SIMD dispatch before the first
+`run`.
 
 ## Whole recordings
 
@@ -146,6 +146,12 @@ ffmpeg -i in.m4a -ar 48000 -f f32le - |
     dpdfnet-enhance --channels 2 --attenuation 48 |
     ffmpeg -f f32le -ar 48000 -ac 2 -i - out.flac
 ```
+
+`--channels` is 1 to 64 (default 1), `--attenuation` 0 to 100 dB (default
+100), `--threads` 1 to 256 stage threads (default below); `--help` lists them.
+The model comes from `DPDFNET_NATIVE_MODEL` or the installed bundle. Usage
+errors exit with 2, processing errors with 1, and raw samples are never written
+to a terminal.
 
 Each channel runs through the network as a pipeline. `Model::into_stages`
 splits it into stages that keep only their own state: the features and input
@@ -198,9 +204,24 @@ python dpdfnet/tools/pack_matrices.py --source row-major-w8a16 \
 ```
 
 `packing.json` records the SHA-256 of the row-major source and of the packed
-result; packing only moves bytes. `export_model.py --mode f32` gives the
-unquantized reference used by `compare_reference.py`, which checks 14
-intermediate points per frame and reports the first divergence.
+result; packing only moves bytes. The loader accepts only packed (schema 2)
+bundles. `export_model.py --mode f32` gives the unquantized reference used by
+`compare_reference.py`, packed the same way; it checks the 14 intermediate
+points that `dpdfnet_native_trace` exposes (listed in
+`dpdfnet/include/dpdfnet_native.h`) and reports the first divergence.
+
+## Diagnostics
+
+```sh
+cargo run --profile release-unwind -p dpdfnet-native --example inspect -- BUNDLE
+cargo run --profile release-unwind -p dpdfnet-native --example benchmark -- BUNDLE [SECONDS]
+python dpdfnet/tools/check_abi.py --bundle BUNDLE
+```
+
+`inspect` prints why a bundle does not load. `benchmark` times every hop of the
+streaming path and fails on any heap allocation while processing.
+`check_abi.py` drives the C API and the LADSPA descriptor of the built library,
+in place and out of place.
 
 ## Why int8 and not int4
 

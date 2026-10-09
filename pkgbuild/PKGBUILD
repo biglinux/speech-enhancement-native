@@ -6,7 +6,7 @@ pkgver=$(date +%y.%m.%d)
 pkgrel=$(date +%H%M)
 arch=('x86_64')
 url="https://github.com/biglinux/${pkgbase}"
-makedepends=('git' 'rust')
+makedepends=('git' 'rust' 'libpipewire')
 source=("git+${url}.git")
 md5sums=('SKIP')
 
@@ -23,11 +23,12 @@ build() {
 
 check() {
     cd "${srcdir}/${pkgbase}" || return
-    export AEC_GTCRN_GGUF="${PWD}/gtcrn-aec/model/localvqe-pi-aec-v1-49k-f32.gguf"
-    export DPDFNET_TEST_MODEL="${PWD}/dpdfnet/model/dpdfnet2_48khz_hr-w8a16"
     cargo test --frozen --release --workspace --exclude dpdfnet-native
     cargo test --frozen --profile release-unwind -p dpdfnet-native
-    cargo test --frozen --profile release-unwind -p dpdfnet-native --test runtime --test offline -- --ignored
+    # The Rust SPA structs against the installed C headers.
+    cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libspa-0.2) \
+        gtcrn-aec/tools/spa-aec-abi-check.c -ldl -o "${srcdir}/spa-aec-abi-check"
+    "${srcdir}/spa-aec-abi-check" target/release/libspa_aec_gtcrn.so
 }
 
 _licenses() {
@@ -35,7 +36,7 @@ _licenses() {
 }
 
 package_deepfilternet3-native() {
-    pkgdesc='DeepFilterNet3 and DeepFilterNet3-LL noise suppression, native int8/SIMD Rust engine (LADSPA plugins)'
+    pkgdesc='DeepFilterNet3 and DeepFilterNet3-LL noise suppression with a Silero voice gate, native int8/SIMD Rust engine (LADSPA plugins)'
     license=('MIT OR Apache-2.0')
     depends=('libgcc' 'glibc')
     # Transition from deepfilternet-quantized-ladspa, which also held the AEC:
@@ -53,6 +54,8 @@ package_deepfilternet3-native() {
     _licenses
     install -Dm644 deepfilternet3/LICENSE-DeepFilterNet-MIT \
         "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-DeepFilterNet-MIT"
+    install -Dm644 silero-vad/model/LICENSE-Silero \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-Silero"
 }
 
 package_dpdfnet-native() {

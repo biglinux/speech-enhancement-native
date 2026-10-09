@@ -1,6 +1,6 @@
-/* Validate the actual Rust shared library using the installed C headers.
- * No GGUF model or sound device is required. Run in a separate test process.
- * cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror $(pkg-config --cflags libspa-0.2) \
+/* Check the built Rust plugin through the installed SPA C headers.
+ * No model or sound device is needed.
+ * cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libspa-0.2) \
  *   gtcrn-aec/tools/spa-aec-abi-check.c -ldl -o spa-aec-abi-check
  * ./spa-aec-abi-check target/release/libspa_aec_gtcrn.so
  */
@@ -74,12 +74,17 @@ int main(int argc, char **argv) {
     CHECK(handle->get_interface(handle, "not-an-interface", &unsupported) == -ENOTSUP);
     CHECK(unsupported == NULL);
     CHECK(handle->clear(handle) == 0);
-    printf("header-layout: handle=%zu factory=%zu aec=%zu methods=%zu raw=%zu "
-           "methods.init=%zu methods.run=%zu methods.init2=%zu\n",
-           sizeof(struct spa_handle), sizeof(struct spa_handle_factory),
-           sizeof(struct spa_audio_aec), sizeof(struct spa_audio_aec_methods),
-           sizeof(struct spa_audio_info_raw), offsetof(struct spa_audio_aec_methods, init),
-           offsetof(struct spa_audio_aec_methods, run), offsetof(struct spa_audio_aec_methods, init2));
+    /* The same numbers are compile-time assertions in spa-aec-gtcrn/src/lib.rs. */
+    if (sizeof(void *) == 8) {
+        CHECK(sizeof(struct spa_handle) == 24);
+        CHECK(sizeof(struct spa_handle_factory) == 48);
+        CHECK(sizeof(struct spa_audio_aec) == 56);
+        CHECK(sizeof(struct spa_audio_aec_methods) == 88);
+        CHECK(sizeof(struct spa_audio_info_raw) == 272);
+        CHECK(offsetof(struct spa_audio_aec_methods, init) == 16);
+        CHECK(offsetof(struct spa_audio_aec_methods, run) == 24);
+        CHECK(offsetof(struct spa_audio_aec_methods, init2) == 80);
+    }
     free(handle);
     dlclose(lib);
     puts("PASS: C header / Rust SPA interface contract");

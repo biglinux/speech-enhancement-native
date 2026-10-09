@@ -3,7 +3,8 @@ name = "dfn-ops"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Shared int8/SIMD numeric kernels for the DeepFilterNet LADSPA denoisers"
+description = "int8/SIMD kernels and resamplers shared by the DeepFilterNet3, GTCRN-AEC and Silero engines"
+publish = false
 
 [dependencies]
 libc = "0.2"

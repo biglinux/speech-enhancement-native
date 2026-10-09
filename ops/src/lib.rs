@@ -1,44 +1,87 @@
-//! Numeric primitives for the DFN3 pipeline.
+//! Numeric kernels shared by the DeepFilterNet3, GTCRN-AEC and Silero engines:
+//! f32 and W8A16 matrix products, GRU cells, convolutions on the frequency axis,
+//! and the 48/16 kHz resamplers.
 //!
-//! Independent Rust implementation of the standard NN ops the model needs
-//! (matvec, grouped linear, ONNX GRU cell, depthwise/pointwise conv on the
-//! frequency axis). The scalar fallbacks use exact libm math (`exp`/`tanh`/`sin`);
-//! the AVX GRU gate runs a vectorised range-reduced polynomial (`exp8`/`tanh8`,
-//! ~1e-6 rel, >100 dB), which is the path that actually executes on the i3/i5.
+//! The scalar fallbacks use exact libm math. The AVX GRU gates use range-reduced
+//! polynomials (`exp8`/`tanh8`, about 1e-6 relative error).
 
 #![allow(clippy::needless_range_loop)] // numeric kernels index by design
 #![allow(clippy::too_many_arguments)] // GRU/GEMV kernels take weight+bias+dims explicitly
 
+#[cfg(test)]
+mod kernel_tests;
 #[cfg(target_arch = "x86_64")]
 mod matvec_port;
 pub mod pack_format;
 mod packed;
 mod quant;
-/// Flush-to-zero + denormals-are-zero on the calling (real-time) thread. The
-/// recurrent FP32 state decays toward denormal magnitudes when the input goes
-/// quiet; without FTZ/DAZ, denormal arithmetic on x86 is 10-100x slower and can
-/// spike a hop into an xrun during silence. MXCSR is per-thread, so the LADSPA
-/// `run` callback sets it. Idempotent and cheap; left set for the thread.
-#[inline]
-pub fn flush_denormals() {
+pub mod resample;
+
+/// Sets flush-to-zero and denormals-are-zero on the calling thread and restores
+/// the previous MXCSR when dropped, so the host and the other plugins on its audio
+/// thread keep their floating-point environment. Recurrent state decays toward
+/// denormals in silence, and denormal arithmetic on x86 is slow enough to push a
+/// hop into an xrun.
+#[must_use]
+pub struct DenormalGuard {
     #[cfg(target_arch = "x86_64")]
-    {
-        use std::arch::asm;
-        // FTZ = bit 15 (0x8000), DAZ = bit 6 (0x0040).
-        let mut csr: u32 = 0;
-        unsafe {
-            asm!("stmxcsr [{p}]", p = in(reg) &mut csr, options(nostack, preserves_flags));
-            csr |= 0x8040;
-            asm!("ldmxcsr [{p}]", p = in(reg) &csr, options(nostack, readonly, preserves_flags));
+    saved: u32,
+}
+
+impl DenormalGuard {
+    #[inline]
+    pub fn new() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let saved = read_mxcsr();
+            // FTZ = bit 15, DAZ = bit 6.
+            write_mxcsr(saved | 0x8040);
+            Self { saved }
         }
+        #[cfg(not(target_arch = "x86_64"))]
+        Self {}
+    }
+}
+
+impl Default for DenormalGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for DenormalGuard {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        write_mxcsr(self.saved);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn read_mxcsr() -> u32 {
+    let mut csr = 0u32;
+    // SAFETY: stmxcsr stores the 32-bit MXCSR to a valid, writable u32.
+    unsafe {
+        std::arch::asm!("stmxcsr [{p}]", p = in(reg) &mut csr, options(nostack, preserves_flags));
+    }
+    csr
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn write_mxcsr(csr: u32) {
+    // SAFETY: the value comes from stmxcsr with only the FTZ/DAZ bits changed, so
+    // no reserved bit is set and ldmxcsr cannot fault.
+    unsafe {
+        std::arch::asm!("ldmxcsr [{p}]", p = in(reg) &csr, options(nostack, readonly, preserves_flags));
     }
 }
 
 #[inline]
 pub fn relu_inplace(x: &mut [f32]) {
-    // A select stored unconditionally, not a conditional store: the store-only-
-    // when-negative form never vectorized and branched on the sign of every
-    // element (~24% of DFN3's cycles). -0.0 and NaN pass through as before.
+    // An unconditional store of a select vectorizes; a store only when negative
+    // branches on every element. -0.0 and NaN pass through.
     for v in x {
         *v = if *v < 0.0 { 0.0 } else { *v };
     }
@@ -77,22 +120,9 @@ pub fn atten_lim_from_db(db: f32) -> f32 {
     }
 }
 
-// Exact libm math (scalar fallbacks; the AVX GRU gate uses a vectorised poly).
 #[inline]
 pub fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
-}
-#[inline]
-pub fn tanh_f(x: f32) -> f32 {
-    x.tanh()
-}
-#[inline]
-pub fn log10_f(x: f32) -> f32 {
-    x.log10()
-}
-#[inline]
-pub fn sin_unit(x: f32) -> f32 {
-    x.sin()
 }
 
 #[inline]
@@ -151,6 +181,11 @@ pub fn simd_tier() -> u8 {
     };
     CACHE.store(t, Ordering::Relaxed);
     t
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn simd_tier() -> u8 {
+    0
 }
 
 /// Chooses the fused op inside the vdot kernel: real FMA on the avx2 expansion, a
@@ -239,8 +274,7 @@ pub fn vdot_f32(a: &[f32], b: &[f32]) -> f32 {
 
 /// In-place AXPY: `y[i] += a * x[i]`, 8-wide. Element-wise, so the accumulation
 /// order matches the scalar loop (only FMA rounding differs on tier 3). Used by the
-/// AEC conv2d fast path; a fresh kernel, not the denoiser's `pointwise_conv2d`, so
-/// the denoiser's cross-tier bit-identity is untouched.
+/// AEC convolutions, which do not need cross-tier bit-identity.
 #[cfg(target_arch = "x86_64")]
 macro_rules! axpy_body {
     ($y:expr, $x:expr, $a:expr, $fma:tt) => {{
@@ -276,8 +310,8 @@ unsafe fn axpy_avx(y: &mut [f32], x: &[f32], a: f32) {
 
 /// Pointwise (1x1) conv `out[co][w] = bias[co] + Σ_ci weight[co][ci]·in[ci][w]`,
 /// SIMD over width with the whole ci reduction inside one call (no per-(co,ci)
-/// dispatch). `$fma` picks FMA vs mul+add. A fresh AEC kernel — not the denoiser's
-/// scalar `pointwise_conv2d`, so its cross-tier bit-identity is untouched.
+/// dispatch). `$fma` picks FMA vs mul+add. Used by the AEC; the denoisers use
+/// [`pointwise_conv2d`], which is bit-identical across tiers.
 #[cfg(target_arch = "x86_64")]
 macro_rules! pointwise_body {
     ($out:expr, $inp:expr, $w:expr, $b:expr, $ci_n:expr, $co_n:expr, $width:expr, $fma:tt) => {{
@@ -537,7 +571,7 @@ pub fn gru8(
 /// Quantise f32 -> i16 (per-vector abs-max / 16383, symmetric). Returns the scale.
 /// 14-bit activation (~80 dB) keeps the int32 `pmaddwd` accumulator well below 2^31
 /// (127·16383·512 ≈ 1.07e9) so the GEMV is exact-integer and deterministic.
-pub fn quantize_i16(x: &[f32], out: &mut [i16]) -> f32 {
+fn quantize_i16(x: &[f32], out: &mut [i16]) -> f32 {
     quant::quantize(x, out)
 }
 fn quantize_i16_reference(x: &[f32], out: &mut [i16]) -> f32 {
@@ -551,75 +585,7 @@ fn quantize_i16_reference(x: &[f32], out: &mut [i16]) -> f32 {
     scale
 }
 
-/// W8A16 GEMV: `y[i] = (Σ_j q[i,j]·xq[j]) · rowscale[i] · xscale`, integer `pmaddwd`
-/// core (needs only SSE4.1, so it runs on cheap no-AVX CPUs and the AVX-only i3).
-/// Exact integer accumulation, so the result is bit-identical across all tiers.
-pub fn matvec_i8_i16(
-    y: &mut [f32],
-    q: &[i8],
-    ws: &[f32],
-    xq: &[i16],
-    xscale: f32,
-    m: usize,
-    n: usize,
-) {
-    // The public safe API must validate before entering raw-pointer kernels.
-    assert!(y.len() >= m && ws.len() >= m && xq.len() >= n);
-    assert!(q.len() >= m.checked_mul(n).expect("GEMV dimensions overflow"));
-    // Arbitrary callers may use full-range i16, not only our 14-bit quantizer.
-    // Bound the absolute sum so EVERY partial i32 accumulator is representable.
-    // n <= 511 is always safe. Larger sums take a wide scalar fallback (not used by shipped model shapes).
-    let i32_safe = n <= 511
-        || xq[..n].iter().fold(0u64, |sum, &x| {
-            sum.saturating_add(i64::from(x).unsigned_abs())
-        }) <= i32::MAX as u64 / 128;
-    if !i32_safe {
-        for i in 0..m {
-            let row = &q[i * n..(i + 1) * n];
-            let sum = row
-                .iter()
-                .zip(&xq[..n])
-                .fold(0i128, |a, (&w, &x)| a + i128::from(w) * i128::from(x));
-            y[i] = sum as f32 * ws[i] * xscale;
-        }
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        if !cfg!(feature = "force-sse41")
-            && !cfg!(feature = "force-avx1")
-            && is_x86_feature_detected!("avx2")
-        {
-            // SAFETY: exact feature and all buffer lengths checked above.
-            unsafe { matvec_i8_i16_avx2(y, q, ws, xq, xscale, m, n) };
-            return;
-        }
-        if is_x86_feature_detected!("sse4.1") {
-            // SAFETY: exact feature and all buffer lengths checked above.
-            unsafe { matvec_i8_i16_sse(y, q, ws, xq, xscale, m, n) };
-            return;
-        }
-    }
-    for i in 0..m {
-        let row = &q[i * n..i * n + n];
-        let mut s = 0i32;
-        for j in 0..n {
-            s += row[j] as i32 * xq[j] as i32;
-        }
-        y[i] = s as f32 * ws[i] * xscale;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse2")]
-unsafe fn hsum_i32(v: std::arch::x86_64::__m128i) -> i32 {
-    use std::arch::x86_64::*;
-    let s = _mm_add_epi32(v, _mm_shuffle_epi32(v, 0b_01_00_11_10));
-    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b_10_11_00_01));
-    _mm_cvtsi128_si32(s)
-}
-
-/// 8-wide exp (AVX, no FMA — runs on the i3): range-reduce to `2^r · poly(f)`,
+/// 8-wide exp (AVX, no FMA): range-reduce to `2^r · poly(f)`,
 /// degree-5 Taylor on |f| ≤ ln2/2 (~1e-6 rel, >100 dB). `2^r` reconstructed via
 /// SSE 128-bit int shifts so no AVX2 is needed.
 #[cfg(target_arch = "x86_64")]
@@ -704,7 +670,7 @@ unsafe fn log10_8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
 
 /// In-place vectorised `out[i] = log10(out[i])` for `out[i] > 0`. AVX path where
 /// available (tiers 2/3), else scalar libm. ~1e-4 rel on the SIMD path — callers
-/// needing exact log10 must use the scalar `log10_f`.
+/// needing exact log10 must use `f32::log10`.
 pub fn log10_slice(out: &mut [f32]) {
     #[cfg(target_arch = "x86_64")]
     {
@@ -742,11 +708,6 @@ pub fn log10_slice(out: &mut [f32]) {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn gate8(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
-    gate8_reference(h, wx, rh, b, hs);
-}
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn gate8_reference(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
     use std::arch::x86_64::*;
     let one = _mm256_set1_ps(1.0);
     let mut i = 0;
@@ -775,81 +736,9 @@ unsafe fn gate8_reference(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: 
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn matvec_i8_i16_avx2(
-    y: &mut [f32],
-    q: &[i8],
-    ws: &[f32],
-    xq: &[i16],
-    xscale: f32,
-    m: usize,
-    n: usize,
-) {
-    use std::arch::x86_64::*;
-    let n16 = n & !15;
-    let qp = q.as_ptr();
-    let xp = xq.as_ptr();
-    for i in 0..m {
-        let row = qp.add(i * n);
-        let mut acc = _mm256_setzero_si256();
-        let mut j = 0;
-        while j < n16 {
-            let wi16 = _mm256_cvtepi8_epi16(_mm_loadu_si128(row.add(j) as *const __m128i)); // 16 i8->i16
-            let xi16 = _mm256_loadu_si256(xp.add(j) as *const __m256i);
-            acc = _mm256_add_epi32(acc, _mm256_madd_epi16(wi16, xi16)); // 8 i32
-            j += 16;
-        }
-        let s128 = _mm_add_epi32(
-            _mm256_castsi256_si128(acc),
-            _mm256_extracti128_si256(acc, 1),
-        );
-        let mut s = hsum_i32(s128);
-        while j < n {
-            s += *row.add(j) as i32 * *xp.add(j) as i32;
-            j += 1;
-        }
-        y[i] = s as f32 * *ws.get_unchecked(i) * xscale;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn matvec_i8_i16_sse(
-    y: &mut [f32],
-    q: &[i8],
-    ws: &[f32],
-    xq: &[i16],
-    xscale: f32,
-    m: usize,
-    n: usize,
-) {
-    use std::arch::x86_64::*;
-    let n8 = n & !7;
-    let qp = q.as_ptr();
-    let xp = xq.as_ptr();
-    for i in 0..m {
-        let row = qp.add(i * n);
-        let mut acc = _mm_setzero_si128();
-        let mut j = 0;
-        while j < n8 {
-            let wi16 = _mm_cvtepi8_epi16(_mm_loadl_epi64(row.add(j) as *const __m128i)); // 8 i8->i16
-            let xi16 = _mm_loadu_si128(xp.add(j) as *const __m128i);
-            acc = _mm_add_epi32(acc, _mm_madd_epi16(wi16, xi16)); // 4 i32
-            j += 8;
-        }
-        let mut s = hsum_i32(acc);
-        while j < n {
-            s += *row.add(j) as i32 * *xp.add(j) as i32;
-            j += 1;
-        }
-        y[i] = s as f32 * *ws.get_unchecked(i) * xscale;
-    }
-}
-
 /// `y[N] = A[M,N]^T * x[M]`, A row-major (accumulate columns / SAXPY).
 #[inline]
-pub fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
+fn matvec_t(y: &mut [f32], a: &[f32], x: &[f32], m: usize, n: usize) {
     assert!(y.len() >= n && x.len() >= m);
     assert!(a.len() >= m.checked_mul(n).expect("matvec_t dimensions overflow"));
     #[cfg(target_arch = "x86_64")]
@@ -956,10 +845,10 @@ pub fn grouped_linear(
     }
 }
 
-/// int8-weight GRU cell, W8A16: activations quantised to int16 per matvec, `pmaddwd`
-/// integer core; gates and state stay f32. `xq16` is scratch, len >= max(input, hs).
-#[allow(clippy::too_many_arguments)]
-pub fn gru_cell_q(
+/// int8-weight GRU cell over pair-packed matrices (W8A16): activations are
+/// quantized to int16 per product, gates and state stay f32. ONNX gate order
+/// `[z,r,h]`, `linear_before_reset=1`. `xq16` is scratch, len >= max(input, hs).
+pub fn gru_cell_packed(
     h: &mut [f32],
     x: &[f32],
     wq: &[i8],
@@ -989,12 +878,13 @@ pub fn gru_cell_q(
     let (wx, rest) = scratch.split_at_mut(gates);
     let rh = &mut rest[..3 * hs];
     let sx = quantize_i16(x, &mut xq16[..input]);
-    matvec_i8_i16(wx, wq, ws, &xq16[..input], sx, 3 * hs, input);
+    packed::matvec(wx, wq, ws, &xq16[..input], sx, 3 * hs, input);
     let sh = quantize_i16(h, &mut xq16[..hs]);
-    matvec_i8_i16(rh, rq, rs, &xq16[..hs], sh, 3 * hs, hs);
+    packed::matvec(rh, rq, rs, &xq16[..hs], sh, 3 * hs, hs);
 
     finish_gru(h, wx, rh, b, hs);
 }
+
 fn finish_gru(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
     #[cfg(target_arch = "x86_64")]
     if simd_tier() >= 2 && hs.is_multiple_of(8) {
@@ -1010,7 +900,7 @@ fn finish_gru(h: &mut [f32], wx: &[f32], rh: &[f32], b: &[f32], hs: usize) {
     for i in 0..hs {
         let z = sigmoid(wx[i] + rh[i] + wbz[i] + rbz[i]);
         let rr = sigmoid(wx[hs + i] + rh[hs + i] + wbr[i] + rbr[i]);
-        let hh = tanh_f(wx[2 * hs + i] + wbh[i] + rr * (rh[2 * hs + i] + rbh[i]));
+        let hh = (wx[2 * hs + i] + wbh[i] + rr * (rh[2 * hs + i] + rbh[i])).tanh();
         h[i] = (1.0 - z) * hh + z * h[i];
     }
 }
@@ -1062,8 +952,10 @@ pub fn pointwise_conv2d(
 ) {
     #[cfg(target_arch = "x86_64")]
     if simd_tier() >= 2 {
-        assert!(out.len() >= c_out * width && input.len() >= c_in * width);
-        assert!(weight.len() >= c_out * c_in && bias.len() >= c_out);
+        assert!(out.len() >= c_out.checked_mul(width).expect("pointwise output overflow"));
+        assert!(input.len() >= c_in.checked_mul(width).expect("pointwise input overflow"));
+        assert!(weight.len() >= c_out.checked_mul(c_in).expect("pointwise weights overflow"));
+        assert!(bias.len() >= c_out);
         // SAFETY: AVX was detected at run time; the asserts bound every access.
         unsafe { pointwise_conv2d_avx(out, input, weight, bias, c_in, c_out, width) };
         return;
@@ -1071,10 +963,9 @@ pub fn pointwise_conv2d(
     pointwise_conv2d_scalar(out, input, weight, bias, c_in, c_out, width);
 }
 
-/// AVX body of [`pointwise_conv2d`]. It was the largest cost in DFN3 (37% of the
-/// plugin's cycles on both an i5-13400 and an i3-2375M) because the generic loop
-/// compiles to 128-bit SSE2 read-modify-writing `out` once per input channel.
-/// Here up to 32 output columns stay in registers across every input channel.
+/// AVX body of [`pointwise_conv2d`], the largest single cost in DFN3. The scalar
+/// loop rewrites `out` once per input channel; here up to 32 output columns stay
+/// in registers across every input channel.
 /// Each lane still computes `bias + w0*x0 + w1*x1 + ...` left to right with a
 /// separate multiply and add (no FMA), so the result is bit-identical to the
 /// scalar loop on every tier.
@@ -1141,9 +1032,8 @@ fn pointwise_conv2d_scalar(
     c_out: usize,
     width: usize,
 ) {
-    // co outer / ci inner: each output row is accumulated in place (stays hot in
-    // L1/registers) while the small input tile is re-read from L1. Same summation
-    // order as before -> bit-identical, but far fewer out load-modify-store passes.
+    // co outer, ci inner: each output row stays hot in L1 while the small input
+    // tile is re-read. The AVX body keeps exactly this summation order.
     for co in 0..c_out {
         let o = &mut out[co * width..co * width + width];
         o.fill(bias[co]);
@@ -1152,418 +1042,6 @@ fn pointwise_conv2d_scalar(
             let in_row = &input[ci * width..ci * width + width];
             for w in 0..width {
                 o[w] += wt * in_row[w];
-            }
-        }
-    }
-}
-
-/// Post-model silence expander: a level-keyed downward expander that ducks the
-/// residual noise floor during pauses **without muting** (finite depth), so quiet
-/// wanted background (music) survives at low depth.
-///
-/// Why level-based and not the model's SNR gate: DFN3 normalises its input by a
-/// running per-band mean, so absolute level is invisible to it — the residual
-/// mic/room floor in a pause reaches the net looking like "noise at normal scale"
-/// and its LSNR gate never fires. The information that decides "this is silence"
-/// is the absolute output level, so the gate has to key on that.
-///
-/// Runs after the model on the processed hop. Pure scalar f32 (only per-sample
-/// multiplies in the hot path; the one `sqrt`/`powf` are per hop), so it is
-/// bit-identical across SIMD tiers and never touches the W8A16 arithmetic. With
-/// `depth_db <= 0` it is an exact pass-through (the shipped golden vectors run at
-/// depth 0 and are unaffected).
-pub struct SilenceExpander {
-    /// Current smoothed gain, ramped per sample to avoid zipper noise.
-    gain: f32,
-    /// Hops of "protect as speech" remaining after the last clearly-speech hop.
-    /// Guards word tails and short gaps from being ducked as noise.
-    hold: i32,
-    /// Consecutive ducked hops since the protective hold expired. Drives the
-    /// progressive deepening that mutes long silences fully.
-    silent: i32,
-    /// Consecutive clearly-speech hops. Out of a deep silence a lone impulse
-    /// (mouse click) trips the model LSNR for a single hop; requiring a short run
-    /// of speech before reopening blocks it while real, sustained speech opens.
-    speech_run: i32,
-}
-
-impl Default for SilenceExpander {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SilenceExpander {
-    /// One-pole ramp coefficients: attack ~2 ms, release ~120 ms at 48 kHz.
-    /// `1 - exp(-1/(t·sr))`. The slow release is a graceful fade into the duck so
-    /// it never snaps; the fast attack recovers gain the instant speech returns.
-    const ATTACK: f32 = 0.010_362_6;
-    const RELEASE: f32 = 0.000_173_6;
-    /// A hop counts as speech when the model's local SNR is at least this many dB
-    /// above its own gate threshold — a small margin so a marginal frame does not
-    /// flip the controller open.
-    const OPEN_MARGIN_DB: f32 = 3.0;
-    /// Keep protecting the output as speech for this many hops after the last
-    /// clearly-speech hop (~300 ms at 480/48000), so word tails and short gaps are
-    /// not ducked. Only once this expires is a hop treated as post-speech noise.
-    const HOLD_HOPS: i32 = 30;
-
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            gain: 1.0,
-            hold: 0,
-            silent: 0,
-            speech_run: 0,
-        }
-    }
-
-    /// Consecutive speech hops required to reopen once a silence has deepened.
-    /// A mouse click is a sub-hop impulse (one flagged hop); two in a row means
-    /// sustained speech. Only applied out of a deep silence, so conversational
-    /// onsets after short gaps still open on the first speech hop.
-    const OPEN_CONFIRM: i32 = 2;
-
-    /// Ducked hops before the finite duck starts deepening toward a full mute.
-    /// ~0.5 s at 480/48000, on top of the speech hold, so ordinary between-word
-    /// gaps keep the gentle finite duck and only a sustained silence deepens.
-    const DEEP_START_HOPS: i32 = 50;
-    /// Hops over which the target ramps from the finite duck to a full mute
-    /// (~1 s). By ~1.5 s of continuous silence the output is fully muted, so the
-    /// low-level residual that the finite depth leaves at -depth dB is removed.
-    const DEEP_RAMP_HOPS: f32 = 100.0;
-
-    /// Duck a post-speech / noise hop by up to `depth_db`, driven by the model's
-    /// own speech confidence (`lsnr` vs its `gate_db` threshold) rather than by a
-    /// level tracker. This is the fix for noise that leaks a few seconds *after*
-    /// speech: the DFN LSNR stays "warm" past the utterance, so the model keeps
-    /// applying gains (not its hard mute) and residual passes. Here, once the LSNR
-    /// has clearly dropped and a short speech hold has expired, the residual is
-    /// attenuated by the finite depth — while speech and its tail pass at unity.
-    /// `depth_db <= 0` (or non-finite) is an exact pass-through.
-    ///
-    /// `floor_open` is an extra NECESSARY condition to leave silence: the caller
-    /// (the plugin) sets it from a user-drawn per-frequency floor curve — true when
-    /// the processed spectrum rises above the curve, false when it sits under it.
-    /// `true` (the default with no curve) leaves behavior bit-identical. Because it
-    /// is AND-ed with the model's `lsnr` flag, the curve can only *tighten* muting,
-    /// never force the gate open where the speech detector says silence.
-    pub fn process_hop(
-        &mut self,
-        buf: &mut [f32],
-        depth_db: f32,
-        lsnr: f32,
-        gate_db: f32,
-        floor_open: bool,
-    ) {
-        if !depth_db.is_finite() || depth_db <= 0.0 || buf.is_empty() {
-            return;
-        }
-        let flagged = lsnr.is_finite() && lsnr >= gate_db + Self::OPEN_MARGIN_DB;
-        self.speech_run = if flagged { self.speech_run + 1 } else { 0 };
-        // Out of a deepened silence, require a short run of speech to reopen so a
-        // single-hop impulse (mouse click) that trips the LSNR cannot punch the
-        // mute open; ordinary onsets after short gaps still open on the first hop.
-        let deep = self.silent > Self::DEEP_START_HOPS;
-        let open = flagged && floor_open && (!deep || self.speech_run >= Self::OPEN_CONFIRM);
-        if open {
-            self.hold = Self::HOLD_HOPS;
-        } else if self.hold > 0 {
-            self.hold -= 1;
-        }
-        // Unity while speech is present or within the protective hold; otherwise
-        // the finite duck, deepening toward a full mute the longer the silence
-        // lasts. Short between-word gaps keep the gentle finite duck; a sustained
-        // silence is muted fully, removing the residual the finite depth leaves.
-        let target = if open || self.hold > 0 {
-            self.silent = 0;
-            1.0
-        } else {
-            self.silent += 1;
-            let duck = 10f32.powf(-depth_db / 20.0);
-            let over = (self.silent - Self::DEEP_START_HOPS) as f32;
-            if over > 0.0 {
-                duck * (1.0 - (over / Self::DEEP_RAMP_HOPS).min(1.0))
-            } else {
-                duck
-            }
-        };
-        for s in buf {
-            let coeff = if target > self.gain {
-                Self::ATTACK
-            } else {
-                Self::RELEASE
-            };
-            self.gain += (target - self.gain) * coeff;
-            *s *= self.gain;
-        }
-    }
-}
-
-#[cfg(test)]
-mod expander_tests {
-    use super::SilenceExpander;
-
-    const HOP: usize = 480;
-    // A gate threshold and two LSNR values that straddle it: clearly speech and
-    // clearly noise (the model reports its local SNR relative to `GATE`).
-    const GATE: f32 = -18.0;
-    const SPEECH_LSNR: f32 = 0.0; // well above GATE + OPEN_MARGIN
-    const NOISE_LSNR: f32 = -30.0; // below GATE
-
-    fn energy(buf: &[f32]) -> f64 {
-        buf.iter().map(|&s| f64::from(s) * f64::from(s)).sum()
-    }
-
-    fn tone(amp: f32, phase: &mut f32) -> [f32; HOP] {
-        let mut b = [0.0f32; HOP];
-        for s in &mut b {
-            *s = amp * phase.sin();
-            *phase += 0.4;
-        }
-        b
-    }
-
-    #[test]
-    fn a_long_silence_deepens_to_a_full_mute() {
-        // A brief gap keeps the finite duck; a sustained silence is muted fully,
-        // removing the low-level residual that -depth dB alone leaves audible.
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        let duck = 10f32.powf(-40.0 / 20.0); // 40 dB target floor
-                                             // Warm to the finite duck with a short gap (< DEEP_START), no deepening.
-        let mut short = 0.0;
-        for _ in 0..40 {
-            let mut buf = tone(1.0, &mut ph);
-            ex.process_hop(&mut buf, 40.0, NOISE_LSNR, GATE, true);
-            short = buf[HOP - 1].abs();
-        }
-        assert!(short > duck * 0.5, "a brief gap must not mute: {short}");
-        // Continue into a long silence: the target ramps to a full mute.
-        for _ in 0..250 {
-            let mut buf = tone(1.0, &mut ph);
-            ex.process_hop(&mut buf, 40.0, NOISE_LSNR, GATE, true);
-        }
-        let mut buf = tone(1.0, &mut ph);
-        ex.process_hop(&mut buf, 40.0, NOISE_LSNR, GATE, true);
-        let deep = energy(&buf);
-        assert!(
-            deep < 1e-6,
-            "a long silence must mute fully, got energy {deep}"
-        );
-    }
-
-    #[test]
-    fn a_lone_click_in_deep_silence_stays_muted() {
-        // Settle into a deep, fully-muted silence, then fire a one-hop impulse
-        // that trips the LSNR (a mouse click): it must not reopen the gate.
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        for _ in 0..250 {
-            let mut buf = tone(1.0, &mut ph);
-            ex.process_hop(&mut buf, 40.0, NOISE_LSNR, GATE, true);
-        }
-        // Single speech-flagged hop (the click) — expect it stays muted.
-        let mut click = tone(1.0, &mut ph);
-        ex.process_hop(&mut click, 40.0, SPEECH_LSNR, GATE, true);
-        assert!(
-            energy(&click) < 1e-6,
-            "a lone click must stay muted, got {}",
-            energy(&click)
-        );
-        // Sustained speech (two+ consecutive flagged hops) must reopen.
-        let mut open = 0.0;
-        for _ in 0..10 {
-            let mut buf = tone(1.0, &mut ph);
-            ex.process_hop(&mut buf, 40.0, SPEECH_LSNR, GATE, true);
-            open = buf[HOP - 1].abs();
-        }
-        assert!(open > 0.5, "sustained speech must reopen, got {open}");
-    }
-
-    #[test]
-    fn depth_zero_is_exact_passthrough() {
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        for _ in 0..50 {
-            let orig = tone(5e-4, &mut ph);
-            let mut buf = orig;
-            ex.process_hop(&mut buf, 0.0, NOISE_LSNR, GATE, true);
-            assert_eq!(buf, orig, "depth 0 must not touch the samples");
-        }
-    }
-
-    #[test]
-    fn speech_passes_at_unity() {
-        // Frames the model is confident are speech (LSNR above the gate) are never
-        // ducked, regardless of their level.
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        let mut last = 0.0;
-        for _ in 0..40 {
-            let refb = tone(0.3, &mut 0.0);
-            let mut buf = tone(0.3, &mut ph);
-            ex.process_hop(&mut buf, 30.0, SPEECH_LSNR, GATE, true);
-            last = (energy(&buf) / energy(&refb)).sqrt();
-        }
-        assert!(last > 0.98, "speech must pass ~unity, got {last:.3}");
-    }
-
-    #[test]
-    fn post_speech_noise_is_ducked_by_the_depth() {
-        // The symptom this stage fixes: noise that keeps leaking after an
-        // utterance. Once LSNR drops below the gate and the speech hold expires,
-        // the residual is attenuated toward the finite depth.
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        for _ in 0..40 {
-            let mut b = tone(0.3, &mut ph);
-            ex.process_hop(&mut b, 24.0, SPEECH_LSNR, GATE, true);
-        }
-        // Now feed sustained noise-classified hops long enough to clear the hold
-        // and let the ~120 ms release settle.
-        let mut last = 1.0;
-        for _ in 0..120 {
-            let refb = tone(0.05, &mut 0.0);
-            let mut b = tone(0.05, &mut ph);
-            ex.process_hop(&mut b, 24.0, NOISE_LSNR, GATE, true);
-            last = (energy(&b) / energy(&refb)).sqrt();
-        }
-        // depth 24 dB -> target 0.063; the ramp should be well on its way.
-        assert!(
-            last < 0.2,
-            "post-speech noise should be ducked, got {last:.3}"
-        );
-    }
-
-    #[test]
-    fn a_brief_gap_between_words_is_held_not_chopped() {
-        // A short dip below the gate (a gap between words) stays within the hold,
-        // so the next word passes at unity instead of being ducked.
-        let mut ex = SilenceExpander::new();
-        let mut ph = 0.0;
-        for _ in 0..40 {
-            let mut b = tone(0.3, &mut ph);
-            ex.process_hop(&mut b, 30.0, SPEECH_LSNR, GATE, true);
-        }
-        // A ~20 ms gap (2 hops) the model briefly reads as sub-gate.
-        for _ in 0..2 {
-            let mut b = tone(5e-4, &mut ph);
-            ex.process_hop(&mut b, 30.0, NOISE_LSNR, GATE, true);
-        }
-        let refb = tone(0.3, &mut 0.0);
-        let mut word = tone(0.3, &mut ph);
-        ex.process_hop(&mut word, 30.0, SPEECH_LSNR, GATE, true);
-        let ratio = (energy(&word) / energy(&refb)).sqrt();
-        assert!(
-            ratio > 0.95,
-            "word after a brief gap was chopped: {ratio:.3}"
-        );
-    }
-
-    #[test]
-    fn deterministic() {
-        let run = || {
-            let mut ex = SilenceExpander::new();
-            let mut ph = 0.0;
-            let mut out = Vec::new();
-            for hop in 0..30 {
-                let (amp, lsnr) = if hop % 2 == 0 {
-                    (0.3, SPEECH_LSNR)
-                } else {
-                    (5e-4, NOISE_LSNR)
-                };
-                let mut buf = tone(amp, &mut ph);
-                ex.process_hop(&mut buf, 24.0, lsnr, GATE, true);
-                out.extend_from_slice(&buf);
-            }
-            out
-        };
-        assert_eq!(run(), run());
-    }
-}
-
-// The W8A16 GEMV claims a bit-identical result across scalar / SSE4.1 / AVX2
-// because the accumulation is exact integer. The runtime dispatch only ever
-// runs the tier of the CPU running the test, so this forces each kernel
-// directly (it can, since every tier is available on an AVX2 host) and compares
-// them to an independent scalar reference over thousands of random shapes,
-// including sizes that are not multiples of the SIMD width so the remainder
-// paths are exercised.
-#[cfg(all(test, target_arch = "x86_64"))]
-mod simd_equiv {
-    use super::*;
-
-    struct Lcg(u64);
-    impl Lcg {
-        fn next(&mut self) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            self.0
-        }
-        fn i8v(&mut self) -> i8 {
-            (self.next() >> 56) as i8
-        }
-        fn i16v(&mut self) -> i16 {
-            // Activation range produced by quantize_i16: |x| <= 16383.
-            ((self.next() >> 40) as i64 % 32767 - 16383) as i16
-        }
-        fn pos(&mut self) -> f32 {
-            (self.next() >> 40) as f32 / (1u64 << 24) as f32 + 1e-4
-        }
-    }
-
-    fn reference(q: &[i8], ws: &[f32], xq: &[i16], xscale: f32, m: usize, n: usize) -> Vec<f32> {
-        let mut y = vec![0.0f32; m];
-        for i in 0..m {
-            let mut s = 0i32;
-            for j in 0..n {
-                s += q[i * n + j] as i32 * xq[j] as i32;
-            }
-            y[i] = s as f32 * ws[i] * xscale;
-        }
-        y
-    }
-
-    #[test]
-    fn matvec_i8_i16_bit_identical_across_tiers() {
-        let mut r = Lcg(0x1234_5678_9abc_def0);
-        let shapes = [
-            (1usize, 1usize),
-            (3, 7),
-            (8, 16),
-            (16, 17),
-            (32, 31),
-            (13, 64),
-            (64, 127),
-            (48, 512),
-        ];
-        for _ in 0..300 {
-            for &(m, n) in &shapes {
-                let q: Vec<i8> = (0..m * n).map(|_| r.i8v()).collect();
-                let ws: Vec<f32> = (0..m).map(|_| r.pos()).collect();
-                let xq: Vec<i16> = (0..n).map(|_| r.i16v()).collect();
-                let xscale = r.pos();
-                let want = reference(&q, &ws, &xq, xscale, m, n);
-
-                let mut got = vec![0.0f32; m];
-                matvec_i8_i16(&mut got, &q, &ws, &xq, xscale, m, n);
-                assert_eq!(got, want, "dispatch m={m} n={n}");
-
-                if is_x86_feature_detected!("sse4.1") {
-                    let mut g = vec![0.0f32; m];
-                    // SAFETY: guarded by the sse4.1 detection above.
-                    unsafe { matvec_i8_i16_sse(&mut g, &q, &ws, &xq, xscale, m, n) };
-                    assert_eq!(g, want, "sse m={m} n={n}");
-                }
-                if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                    let mut g = vec![0.0f32; m];
-                    // SAFETY: guarded by the avx2+fma detection above.
-                    unsafe { matvec_i8_i16_avx2(&mut g, &q, &ws, &xq, xscale, m, n) };
-                    assert_eq!(g, want, "avx2 m={m} n={n}");
-                }
             }
         }
     }
@@ -1658,6 +1136,19 @@ mod log10_tests {
 mod safe_boundary_tests {
     use super::*;
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn denormal_guard_restores_the_callers_fp_environment() {
+        let before = read_mxcsr();
+        {
+            let _guard = DenormalGuard::new();
+            assert_eq!(read_mxcsr() & 0x8040, 0x8040);
+            assert_eq!(std::hint::black_box(f32::from_bits(1)) * 1.0, 0.0);
+        }
+        assert_eq!(read_mxcsr(), before);
+        assert_ne!(std::hint::black_box(f32::from_bits(1)) * 1.0, 0.0);
+    }
+
     #[test]
     #[should_panic(expected = "vdot_f32: shape mismatch")]
     fn vdot_rejects_mismatched_shape_before_dispatch() {
@@ -1668,15 +1159,6 @@ mod safe_boundary_tests {
     #[should_panic(expected = "axpy_f32: shape mismatch")]
     fn axpy_rejects_mismatched_shape_before_dispatch() {
         axpy_f32(&mut [0.0; 8], &[], 1.0);
-    }
-
-    #[test]
-    fn gemv_handles_full_i16_without_wrapping() {
-        let q = [-128i8; 512];
-        let x = [i16::MIN; 512];
-        let mut y = [0.0];
-        matvec_i8_i16(&mut y, &q, &[1.0], &x, 1.0, 1, 512);
-        assert_eq!(y[0], 2147483648.0);
     }
 
     #[test]
@@ -1698,52 +1180,6 @@ mod safe_boundary_tests {
             assert!(got == expected || (got.is_nan() && expected.is_nan()));
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn gru_cell_packed(
-    h: &mut [f32],
-    x: &[f32],
-    wq: &[i8],
-    ws: &[f32],
-    rq: &[i8],
-    rs: &[f32],
-    b: &[f32],
-    hs: usize,
-    input: usize,
-    scratch: &mut [f32],
-    xq16: &mut [i16],
-) {
-    let gates = hs.checked_mul(3).expect("GRU dimensions overflow");
-    let biases = hs.checked_mul(6).expect("GRU bias dimensions overflow");
-    assert!(h.len() >= hs && x.len() >= input && b.len() >= biases);
-    assert!(scratch.len() >= biases && xq16.len() >= input.max(hs));
-    assert!(wq.len() >= gates.checked_mul(input).expect("GRU weights overflow"));
-    assert!(
-        rq.len()
-            >= gates
-                .checked_mul(hs)
-                .expect("GRU recurrent weights overflow")
-    );
-    assert!(ws.len() >= gates && rs.len() >= gates);
-    let x = &x[..input];
-    let h = &mut h[..hs];
-    let (wx, rest) = scratch.split_at_mut(gates);
-    let rh = &mut rest[..3 * hs];
-    let sx = quantize_i16(x, &mut xq16[..input]);
-    packed::matvec(wx, wq, ws, &xq16[..input], sx, 3 * hs, input);
-    let sh = quantize_i16(h, &mut xq16[..hs]);
-    packed::matvec(rh, rq, rs, &xq16[..hs], sh, 3 * hs, hs);
-
-    finish_gru(h, wx, rh, b, hs);
-}
-
-#[cfg(test)]
-mod kernel_tests;
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn simd_tier() -> u8 {
-    0
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]

@@ -4,20 +4,20 @@
 //!
 //! GGUF stores tensor dims fastest-first, i.e. reversed from PyTorch/numpy, but
 //! the same byte layout — so a weight slice is indexed with numpy strides while
-//! its numpy shape is the GGUF dims reversed (see `npdims`).
+//! its numpy shape is the GGUF dims reversed (see `W::get`).
 
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)] // numeric kernels index by design
 
 use crate::gguf::Gguf;
-use dfn_ops::{sigmoid, tanh_f};
+use dfn_ops::sigmoid;
 
 const FB: usize = 257;
 
 /// Scratch belongs to one StreamCore, not to the thread running it. The
-/// streaming graph has fixed shapes and data-independent temporary lifetimes.
-/// `StreamCore::prepared` records its exact high-water inventory during init,
-/// resets recurrent state, then seals this workspace. No allocation fallback is
-/// permitted after sealing. Batch/debug forward uses an unsealed local workspace.
+/// streaming graph has fixed shapes and data-independent temporary lifetimes,
+/// so `StreamCore::prepared` records the exact inventory of one frame, resets
+/// the recurrent state and seals the workspace; a sealed workspace never
+/// allocates. The batch forward uses an unsealed local workspace.
 #[derive(Default)]
 struct Workspace {
     free: std::cell::RefCell<std::collections::BTreeMap<usize, Vec<Vec<f32>>>>,
@@ -140,13 +140,15 @@ impl std::ops::Deref for Dims {
 }
 
 /// Weight accessor: numpy-order dims (GGUF dims reversed) + the data slice.
+/// `Model::load` checked every tensor against the schema of the shipped model,
+/// so a missing name here is a bug in this crate, not a bad model file.
 struct W<'a>(&'a Gguf);
 impl<'a> W<'a> {
     fn get(&self, name: &str) -> (&'a [f32], Dims) {
         let (d, dims) = self
             .0
             .tensor(name)
-            .unwrap_or_else(|| panic!("missing {name}"));
+            .unwrap_or_else(|| panic!("tensor {name} is not in the schema"));
         let mut np = [0usize; 4];
         for (i, &v) in dims.iter().rev().enumerate() {
             np[i] = v;
@@ -162,7 +164,7 @@ impl<'a> W<'a> {
     fn data(&self, name: &str) -> &'a [f32] {
         self.0
             .tensor(name)
-            .unwrap_or_else(|| panic!("missing {name}"))
+            .unwrap_or_else(|| panic!("tensor {name} is not in the schema"))
             .0
     }
     fn get2(&self, prefix: &str, suffix: &str) -> (&'a [f32], Dims) {
@@ -242,8 +244,7 @@ fn conv2d<'a>(
     // Strided/dilated (enc0/enc1, stride 2): the valid f-range of each tap and its
     // gathered input run depend on (cin, ti, kfi), not on the output channel, so
     // gather each run once into a contiguous scratch row shared by every co. The
-    // accumulation below is then a contiguous multiply-add that vectorizes; the
-    // strided scalar loop it replaces was ~15% of the streaming profile.
+    // accumulation below is then a contiguous multiply-add that vectorizes.
     let s = stride_f as i64;
     let tap_range = |kfi: usize| {
         let off = kfi as i64 * dil_f - pad_f;
@@ -294,9 +295,8 @@ fn conv2d<'a>(
                         for kfi in 0..kf {
                             let wt = w[((co * ing + ci) * kt + k) * kf + kfi];
                             if fast {
-                                // fi = f + (kfi - pad_f); accumulate the overlapping run
-                                // as one AXPY (contiguous, element-wise → SIMD, no per-
-                                // element bounds check / i64 cast).
+                                // fi = f + (kfi - pad_f): the overlapping run is one
+                                // contiguous AXPY, with no per-element bounds check.
                                 let shift = kfi as i64 - pad_f;
                                 let f0 = (-shift).max(0) as usize;
                                 let f1 = (fin - shift).min(fout as i64).max(0) as usize;
@@ -345,7 +345,7 @@ fn prelu_(x: &mut GTensor, slope: &[f32]) {
 
 fn tanh_inplace(x: &mut GTensor) {
     for v in &mut x.d {
-        *v = tanh_f(*v);
+        *v = v.tanh();
     }
 }
 
@@ -454,7 +454,7 @@ fn gru_seq<'a>(
         for k in 0..h_dim {
             let r = sigmoid(gi[k] + gh[k]);
             let z = sigmoid(gi[h_dim + k] + gh[h_dim + k]);
-            let n = tanh_f(gi[2 * h_dim + k] + r * gh[2 * h_dim + k]);
+            let n = (gi[2 * h_dim + k] + r * gh[2 * h_dim + k]).tanh();
             h[k] = (1.0 - z) * n + z * h[k];
         }
         out[ti * h_dim..ti * h_dim + h_dim].copy_from_slice(h);
@@ -495,12 +495,13 @@ fn gru_step(
     for i in 0..nh {
         let r = sigmoid(gi[i] + gh[i]);
         let z = sigmoid(gi[nh + i] + gh[nh + i]);
-        let n = tanh_f(gi[2 * nh + i] + r * gh[2 * nh + i]);
+        let n = (gi[2 * nh + i] + r * gh[2 * nh + i]).tanh();
         h[i] = (1.0 - z) * n + z * h[i];
     }
 }
 
-/// Grouped RNN: split I in half → rnn1/rnn2, each optionally bidirectional.
+/// Grouped RNN: the input is split in half for rnn1 and rnn2, each optionally
+/// bidirectional.
 fn grnn<'a>(
     arena: &'a Workspace,
     x: &[f32],
@@ -521,8 +522,7 @@ fn grnn<'a>(
     let iout = out1 + out2;
     let mut y = Scratch::zeros(arena, n * seq * iout);
     let mut sub = Scratch::zeros(arena, seq * half);
-    // Resolve every rnn weight slice once (was one format!+lookup per (ni,rnn));
-    // the inter GRU runs this n=fd times per frame, so the lookups dominated.
+    // Resolve every rnn weight slice once, outside the per-sequence loop.
     let rnn_w: [[&[f32]; 8]; 2] = std::array::from_fn(|rnn| {
         [
             w.data2(
@@ -769,8 +769,8 @@ fn upsample_zero_f<'a>(arena: &'a Workspace, x: &GTensor, factor: usize) -> GTen
 }
 
 fn add<'a>(arena: &'a Workspace, a: &GTensor, b: &GTensor) -> GTensor<'a> {
-    // Pooled allocation instead of `a.clone()` (Vec::clone bypasses the pool and
-    // hits the allocator on every decoder skip connection each hop).
+    // From the workspace, not `a.clone()`: Vec::clone would bypass it and
+    // allocate on every skip connection.
     let mut y = GTensor::new(arena, a.c, a.t, a.f);
     for ((yi, ai), bi) in y.d.iter_mut().zip(&a.d).zip(&b.d) {
         *yi = ai + bi;
@@ -988,16 +988,30 @@ fn feat<'a>(arena: &'a Workspace, spec: &[f32], t: usize, w: &W) -> GTensor<'a> 
 /// Returns masked `(257,T,2)`.
 #[must_use]
 pub fn forward(gg: &Gguf, spec_e: &[f32], spec_y: &[f32], t: usize) -> Vec<f32> {
-    forward_capture(gg, spec_e, spec_y, t, &mut Vec::new())
+    forward_stages(gg, spec_e, spec_y, t, |_, _| {})
 }
 
-/// Forward that also records each named stage tensor (for parity debugging).
-pub fn forward_capture(
+/// The named stage tensors of [`forward`], to compare with a reference dump.
+#[cfg(test)]
+pub(crate) fn forward_capture(
     gg: &Gguf,
     spec_e: &[f32],
     spec_y: &[f32],
     t: usize,
-    cap: &mut Vec<(&'static str, Vec<f32>)>,
+) -> Vec<(&'static str, Vec<f32>)> {
+    let mut cap = Vec::new();
+    forward_stages(gg, spec_e, spec_y, t, |name, v| {
+        cap.push((name, v.to_vec()))
+    });
+    cap
+}
+
+fn forward_stages(
+    gg: &Gguf,
+    spec_e: &[f32],
+    spec_y: &[f32],
+    t: usize,
+    mut stage: impl FnMut(&'static str, &[f32]),
 ) -> Vec<f32> {
     let storage = Workspace::default();
     let arena = &storage;
@@ -1013,27 +1027,27 @@ pub fn forward_capture(
             }
         }
     }
-    cap.push(("feat", ft.d.clone()));
+    stage("feat", &ft.d);
     let en0 = conv_block(arena, &ft, &w, "encoder.en_convs.0", 1, 2, false, false);
-    cap.push(("enc0", en0.d.clone()));
+    stage("enc0", &en0.d);
     let en1 = conv_block(arena, &en0, &w, "encoder.en_convs.1", 2, 2, false, false);
-    cap.push(("enc1", en1.d.clone()));
+    stage("enc1", &en1.d);
     let en2 = gt_block(arena, &en1, &w, "encoder.en_convs.2", 1);
-    cap.push(("enc2", en2.d.clone()));
+    stage("enc2", &en2.d);
     let en3 = gt_block(arena, &en2, &w, "encoder.en_convs.3", 2);
-    cap.push(("enc3", en3.d.clone()));
+    stage("enc3", &en3.d);
     let en4 = gt_block(arena, &en3, &w, "encoder.en_convs.4", 5);
-    cap.push(("enc4", en4.d.clone()));
+    stage("enc4", &en4.d);
     let d1 = dpgrnn(arena, &en4, &w, "dpgrnn1");
-    cap.push(("dpgrnn1", d1.d.clone()));
+    stage("dpgrnn1", &d1.d);
     let d2 = dpgrnn(arena, &d1, &w, "dpgrnn2");
-    cap.push(("dpgrnn2", d2.d.clone()));
+    stage("dpgrnn2", &d2.d);
     let mut x = gt_block(arena, &add(arena, &d2, &en4), &w, "decoder.de_convs.0", 5);
-    cap.push(("dec0", x.d.clone()));
+    stage("dec0", &x.d);
     x = gt_block(arena, &add(arena, &x, &en3), &w, "decoder.de_convs.1", 2);
-    cap.push(("dec1", x.d.clone()));
+    stage("dec1", &x.d);
     x = gt_block(arena, &add(arena, &x, &en2), &w, "decoder.de_convs.2", 1);
-    cap.push(("dec2", x.d.clone()));
+    stage("dec2", &x.d);
     x = conv_block(
         arena,
         &add(arena, &x, &en1),
@@ -1044,7 +1058,7 @@ pub fn forward_capture(
         true,
         false,
     );
-    cap.push(("dec3", x.d.clone()));
+    stage("dec3", &x.d);
     x = conv_block(
         arena,
         &add(arena, &x, &en0),
@@ -1055,9 +1069,9 @@ pub fn forward_capture(
         true,
         true,
     );
-    cap.push(("dec4", x.d.clone()));
+    stage("dec4", &x.d);
     let m = erb_bs(arena, &x, w.data("erb.bs"));
-    cap.push(("mask", m.d.clone()));
+    stage("mask", &m.d);
     let mut out = vec![0.0f32; FB * t * 2];
     for fb in 0..FB {
         for ti in 0..t {
@@ -1072,8 +1086,8 @@ pub fn forward_capture(
     out
 }
 
-// ── Streaming (per-frame, carried state). Parity must be revalidated against
-// batch/reference after changes; preparing scratch must not warm recurrent state. ──
+// Streaming: one frame per call, recurrent state carried across calls.
+// `streaming_core_matches_batch` checks it against `forward`.
 
 struct GtRing {
     cap: usize,
@@ -1110,16 +1124,8 @@ struct CoreState {
     inter_h: Vec<Vec<f32>>,
 }
 
-impl Default for StreamCore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl StreamCore {
-    /// Unprepared core for offline/debug use. RT callers use `prepared`.
-    #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             state: CoreState {
                 gt: [1usize, 2, 5, 5, 2, 1]
@@ -1202,7 +1208,7 @@ impl CoreState {
         r.frames[(r.cap - 1) * fsz..].copy_from_slice(&h.d);
         let mut ring = GTensor::new(arena, hidden, r.cap, fdim);
         // ring as (hidden, cap, F): ring[(c*cap+t)*F+f] = frames[t*fsz + c*F + f].
-        // For fixed (c,t) the F-run is contiguous in both → a copy, not a gather.
+        // For fixed (c,t) the F-run is contiguous in both, so this is a copy.
         for t in 0..r.cap {
             for c in 0..hidden {
                 let src = t * fsz + c * fdim;
@@ -1326,8 +1332,7 @@ impl CoreState {
         let half = c / 2;
         let (_, whh1) = w.get2(d, ".inter_rnn.rnn1.weight_hh_l0");
         let h1 = whh1[1];
-        // Resolve the two inter GRUs' weights once; the f-loop runs fd times per
-        // frame and used to do 8 format!+lookups each.
+        // Resolve the two inter GRUs' weights once, outside the per-frequency loop.
         let rw: [[&[f32]; 4]; 2] = [
             [
                 w.data2(d, ".inter_rnn.rnn1.weight_ih_l0"),
