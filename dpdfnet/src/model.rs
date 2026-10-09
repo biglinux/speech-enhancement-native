@@ -8,19 +8,14 @@ pub const MODEL_DELAY: usize = 4; // mask delay 2 + middle of DF history delay 2
 const C: usize = 64;
 const COEFS: usize = DF_BINS * 5 * 2;
 
-pub struct DeepFilter {
+pub(crate) struct DeepFilter {
     raw: History,
     masked: History,
     coefs: History,
     temp: Vec<f32>,
 }
-impl Default for DeepFilter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 impl DeepFilter {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             raw: History::new(5, BINS * 2),
             masked: History::new(5, BINS * 2),
@@ -37,7 +32,7 @@ impl DeepFilter {
         dry_mix: f32,
     ) {
         self.raw.push(spec);
-        // Upstream before_df: mask(t) multiplies spectrum(t-2), NOT current spectrum.
+        // Upstream before_df: mask(t) multiplies spectrum(t-2), not the current one.
         for ((dst, src), &m) in self
             .temp
             .as_chunks_mut::<2>()
@@ -212,7 +207,7 @@ impl DfDecoder {
         self.df_out.apply(&self.df_embed, &mut self.coefs);
         self.path_hist.push(d0);
         let path = self.df_path.forward(self.path_hist.view(DF_BINS, C));
-        // tanh belongs to df_out BEFORE the pathway sum. Never clamp the final coefficients.
+        // tanh belongs to df_out, before the pathway sum; upstream does not clamp the sum.
         for (y, &v) in self.coefs.iter_mut().zip(path) {
             *y += v;
         }
@@ -231,12 +226,8 @@ pub(crate) struct Output {
     out: Vec<f32>,
 }
 impl Output {
+    /// `dry_mix` is in [0, 1]: every caller derives it from `atten_lim_from_db`.
     fn run(&mut self, scaled: &[f32], mask: &[f32], coefs: &[f32], dry_mix: f32) -> &[f32] {
-        let dry_mix = if dry_mix.is_finite() {
-            dry_mix.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
         self.filter
             .apply(scaled, mask, coefs, &mut self.out, dry_mix);
         for v in &mut self.out {

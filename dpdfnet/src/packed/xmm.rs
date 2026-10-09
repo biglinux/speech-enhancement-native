@@ -1,13 +1,12 @@
 //! 128-bit integer kernels for CPUs without AVX2: SSE4.1, and the same work in
-//! AVX's VEX encoding. They read the pair-output8-v1 weights as stored.
-//! Both schedules fit x86-64's 16 vector registers; inspect actual machine code
-//! for spills (objdump of the release build). SSE and AVX1 bodies use only XMM
-//! integer arithmetic. AVX1 changes the encoding (VEX), not the integer width.
+//! AVX's VEX encoding, which avoids the SSE/AVX transition penalty next to the
+//! AVX float kernels. They read the pair-output8-v1 weights as stored, and both
+//! schedules fit in x86-64's 16 vector registers.
 use std::arch::x86_64::*;
 
 // Each lane is a complete output. Independent output accumulators hide the
 // integer-add latency without two stripes and without rereading the input for
-// each four-output half. No change to the proven INT32 overflow bound.
+// each four-output half; the INT32 bound in `packed` still holds.
 macro_rules! one_body {
     ($out:ident,$w:ident,$sw:ident,$q:ident,$sx:ident,$rows:ident,$cols:ident) => {{
         let (out, w, sw, q, sx, rows, cols) = ($out, $w, $sw, $q, $sx, $rows, $cols);
@@ -276,6 +275,8 @@ macro_rules! four_body {
     }};
 }
 
+/// # Safety
+/// The CPU must support SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "sse4.1")]
 pub(super) unsafe fn sse_one(
     out: &mut [f32],
@@ -286,9 +287,14 @@ pub(super) unsafe fn sse_one(
     rows: usize,
     cols: usize,
 ) {
-    one_body!(out, w, sw, q, sx, rows, cols)
+    // SAFETY: each row tile reads `w[r * cols..]` for its rows' `cols` pairs, `q`
+    // in pairs below `cols` and its slice of `sw`, and writes its rows of `out`,
+    // all below the `Run` lengths.
+    unsafe { one_body!(out, w, sw, q, sx, rows, cols) }
 }
 
+/// # Safety
+/// The CPU must support SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "sse4.1")]
 pub(super) unsafe fn sse_four(
     out: &mut [f32],
@@ -299,9 +305,14 @@ pub(super) unsafe fn sse_four(
     rows: usize,
     cols: usize,
 ) {
-    four_body!(out, w, sw, q, sx, rows, cols)
+    // SAFETY: each row tile reads `w[r * cols..]` for its rows' `cols` pairs, each
+    // of the four vectors of `q` in pairs below `cols` and its slice of `sw`, and
+    // writes its rows of each output vector, all below the `Run` lengths.
+    unsafe { four_body!(out, w, sw, q, sx, rows, cols) }
 }
 
+/// # Safety
+/// The CPU must support AVX and SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "avx,sse4.1")]
 pub(super) unsafe fn vex_one(
     out: &mut [f32],
@@ -312,9 +323,14 @@ pub(super) unsafe fn vex_one(
     rows: usize,
     cols: usize,
 ) {
-    one_body!(out, w, sw, q, sx, rows, cols)
+    // SAFETY: each row tile reads `w[r * cols..]` for its rows' `cols` pairs, `q`
+    // in pairs below `cols` and its slice of `sw`, and writes its rows of `out`,
+    // all below the `Run` lengths.
+    unsafe { one_body!(out, w, sw, q, sx, rows, cols) }
 }
 
+/// # Safety
+/// The CPU must support AVX and SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "avx,sse4.1")]
 pub(super) unsafe fn vex_four(
     out: &mut [f32],
@@ -325,5 +341,8 @@ pub(super) unsafe fn vex_four(
     rows: usize,
     cols: usize,
 ) {
-    four_body!(out, w, sw, q, sx, rows, cols)
+    // SAFETY: each row tile reads `w[r * cols..]` for its rows' `cols` pairs, each
+    // of the four vectors of `q` in pairs below `cols` and its slice of `sw`, and
+    // writes its rows of each output vector, all below the `Run` lengths.
+    unsafe { four_body!(out, w, sw, q, sx, rows, cols) }
 }

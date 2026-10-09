@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Offline preparation only. Downloads audited source and explicitly pinned checkpoints.
-No networking exists in the native audio callback or shared library.
-"""
+"""Downloads the pinned upstream sources and checkpoint."""
+
 from __future__ import annotations
 import argparse
 import hashlib
@@ -9,6 +8,7 @@ import json
 import re
 import urllib.request
 from pathlib import Path
+
 # Constants only: importing export_model would unnecessarily require torch during download.
 COMMIT = "9bd9844a227bb6aa57e55588d8d0e961fcff1c46"
 BLOBS = {
@@ -20,20 +20,27 @@ BLOBS = {
     "model/utils.py": "01d3b8b825f41f52c7851b0538131ad341ce6a5e",
     "LICENSE": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
 }
+
+
 def get(url: str, limit: int = 64 * 1024 * 1024) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "BigLinux-DPDFNet-native-preparation/1"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "BigLinux-DPDFNet-native-preparation/1"}
+    )
     with urllib.request.urlopen(req, timeout=120) as response:
         data = response.read(limit + 1)
     if len(data) > limit:
         raise ValueError("Download exceeds configured size limit")
     return data
 
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--directory", type=Path, default=Path("inputs"))
     p.add_argument("--depth", choices=(2, 8), type=int, default=2)
-    p.add_argument("--hf-revision", help="40-character commit from Ceva-IP/DPDFNet on Hugging Face")
-    p.add_argument("--checkpoint-sha256", help="Optional independently known checkpoint checksum")
+    p.add_argument(
+        "--hf-revision", help="40-character commit from Ceva-IP/DPDFNet on Hugging Face"
+    )
+    p.add_argument("--checkpoint-sha256", help="Expected checkpoint checksum")
     p.add_argument("--source-only", action="store_true")
     a = p.parse_args()
     if a.hf_revision is not None and not re.fullmatch(r"[0-9a-f]{40}", a.hf_revision):
@@ -43,11 +50,14 @@ def main() -> None:
     except (OSError, ValueError) as e:
         p.error(str(e))
 
+
 def fetch(a: argparse.Namespace) -> None:
     upstream = a.directory / "upstream"
     for file, expected in BLOBS.items():
         data = get(f"https://raw.githubusercontent.com/ceva-ip/DPDFNet/{COMMIT}/{file}")
-        actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+        actual = hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\0" + data
+        ).hexdigest()
         if actual != expected:
             raise ValueError(f"Upstream checksum mismatch: {file}")
         target = upstream / file
@@ -57,21 +67,34 @@ def fetch(a: argparse.Namespace) -> None:
         return
     revision = a.hf_revision
     if revision is None:
-        meta = json.loads(get("https://huggingface.co/api/models/Ceva-IP/DPDFNet", 2 * 1024 * 1024))
+        meta = json.loads(
+            get("https://huggingface.co/api/models/Ceva-IP/DPDFNet", 2 * 1024 * 1024)
+        )
         revision = meta["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("Hugging Face revision must be a full commit SHA")
     filename = f"dpdfnet{a.depth}_48khz_hr.pth"
-    data = get(f"https://huggingface.co/Ceva-IP/DPDFNet/resolve/{revision}/checkpoints/{filename}")
+    data = get(
+        f"https://huggingface.co/Ceva-IP/DPDFNet/resolve/{revision}/checkpoints/{filename}"
+    )
     digest = hashlib.sha256(data).hexdigest()
     if a.checkpoint_sha256 and a.checkpoint_sha256.lower() != digest:
         raise ValueError("Checkpoint checksum mismatch")
     target = a.directory / "checkpoints" / filename
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
-    provenance = dict(source_commit=COMMIT, huggingface_revision=revision, checkpoint=filename,
-                      checkpoint_sha256=digest, independent_checksum_supplied=bool(a.checkpoint_sha256))
-    (target.parent / (filename + ".provenance.json")).write_text(json.dumps(provenance, indent=2) + "\n")
+    provenance = dict(
+        source_commit=COMMIT,
+        huggingface_revision=revision,
+        checkpoint=filename,
+        checkpoint_sha256=digest,
+        independent_checksum_supplied=bool(a.checkpoint_sha256),
+    )
+    (target.parent / (filename + ".provenance.json")).write_text(
+        json.dumps(provenance, indent=2) + "\n"
+    )
     print(json.dumps(provenance, indent=2))
+
+
 if __name__ == "__main__":
     main()

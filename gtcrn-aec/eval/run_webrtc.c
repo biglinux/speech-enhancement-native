@@ -1,6 +1,6 @@
 // Offline driver for the shipped WebRTC AEC SPA plugin (libspa-aec-webrtc.so).
-// Loads the same plugin the product loads, runs it over raw mono f32 files,
-// 10 ms frames. Args mirror echo_cancel.rs (NS/AGC off, HPF/VAD on).
+// Loads the same plugin the product loads and runs it over raw mono f32 files in
+// 10 ms frames, with noise suppression and AGC off, high-pass and VAD on.
 //   run_webrtc <plugin.so> <rate> <mic.f32> <ref.f32> <out.f32>
 #include <dlfcn.h>
 #include <stdio.h>

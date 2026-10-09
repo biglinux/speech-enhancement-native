@@ -6,44 +6,47 @@
 //! [`descriptor`] and exports it from `ladspa_descriptor`.
 
 use crate::expander::SilenceExpander;
-use crate::{Denoiser, Network, ERB_WIDTHS, FFT, HOP, NB_ERB, SR};
-use dfn_ops::{atten_lim_from_db, DenormalGuard};
+use crate::{Denoiser, ERB_WIDTHS, FFT, HOP, NB_ERB, Network, SR};
+use ops::{DenormalGuard, atten_lim_from_db};
 use silero_vad::VoiceGate;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_ulong, c_void};
 use std::ptr;
 
-type Handle = *mut c_void;
+pub type Handle = *mut c_void;
 
+/// `LADSPA_PortRangeHint`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct PortRangeHint {
-    hint_descriptor: i32,
-    lower: f32,
-    upper: f32,
+pub struct PortRangeHint {
+    pub hint_descriptor: i32,
+    pub lower: f32,
+    pub upper: f32,
 }
 
+/// `LADSPA_Descriptor`. The fields are public so the tests and fuzz targets can
+/// drive a plugin the way a host does.
 #[repr(C)]
 pub struct Descriptor {
-    unique_id: c_ulong,
-    label: *const c_char,
-    properties: i32,
-    name: *const c_char,
-    maker: *const c_char,
-    copyright: *const c_char,
-    port_count: c_ulong,
-    port_descriptors: *const i32,
-    port_names: *const *const c_char,
-    port_range_hints: *const PortRangeHint,
-    implementation_data: *mut c_void,
-    instantiate: Option<extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
-    connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
-    activate: Option<extern "C" fn(Handle)>,
-    run: Option<extern "C" fn(Handle, c_ulong)>,
-    run_adding: Option<extern "C" fn(Handle, c_ulong)>,
-    set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
-    deactivate: Option<extern "C" fn(Handle)>,
-    cleanup: Option<extern "C" fn(Handle)>,
+    pub unique_id: c_ulong,
+    pub label: *const c_char,
+    pub properties: i32,
+    pub name: *const c_char,
+    pub maker: *const c_char,
+    pub copyright: *const c_char,
+    pub port_count: c_ulong,
+    pub port_descriptors: *const i32,
+    pub port_names: *const *const c_char,
+    pub port_range_hints: *const PortRangeHint,
+    pub implementation_data: *mut c_void,
+    pub instantiate: Option<extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
+    pub connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
+    pub activate: Option<extern "C" fn(Handle)>,
+    pub run: Option<extern "C" fn(Handle, c_ulong)>,
+    pub run_adding: Option<extern "C" fn(Handle, c_ulong)>,
+    pub set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
+    pub deactivate: Option<extern "C" fn(Handle)>,
+    pub cleanup: Option<extern "C" fn(Handle)>,
 }
 // SAFETY: immutable after construction; the pointers are to 'static data.
 unsafe impl Sync for Descriptor {}
@@ -72,7 +75,13 @@ const POST_FILTER: usize = 7;
 const STARTUP_MS: usize = 8;
 const ANCHORS: usize = 9;
 const VOICE_GATE: usize = ANCHORS + NUM_ANCHORS;
-const PORT_COUNT: usize = VOICE_GATE + 1;
+/// Output: the current input-to-output delay in samples. PipeWire's filter-chain
+/// adds an output control named `latency` to the node's latency.
+const LATENCY: usize = VOICE_GATE + 1;
+const PORT_COUNT: usize = LATENCY + 1;
+
+/// Input samples are clamped to ±8 (+18 dBFS): anything beyond is not audio.
+const MAX_INPUT: f32 = 8.0;
 
 /// Frequencies of the silence-floor curve's anchors.
 const NUM_ANCHORS: usize = 10;
@@ -103,6 +112,7 @@ const NAMES: [&CStr; PORT_COUNT] = [
     c"Silence floor 12 kHz (dB)",
     c"Silence floor 16 kHz (dB)",
     c"Voice gate depth (dB)",
+    c"latency",
 ];
 
 struct Names([*const c_char; PORT_COUNT]);
@@ -122,6 +132,7 @@ static PORT_DESCRIPTORS: [i32; PORT_COUNT] = {
     let mut d = [PORT_INPUT | PORT_CONTROL; PORT_COUNT];
     d[IN] = PORT_INPUT | PORT_AUDIO;
     d[OUT] = PORT_OUTPUT | PORT_AUDIO;
+    d[LATENCY] = PORT_OUTPUT | PORT_CONTROL;
     d
 };
 
@@ -143,12 +154,12 @@ static PORT_HINTS: [PortRangeHint; PORT_COUNT] = {
     };
     h[IN] = audio;
     h[OUT] = audio;
+    h[LATENCY] = audio;
     // 100 dB is full noise reduction, 0 dB passes the input through.
     h[ATTEN] = bounded(DEFAULT_MAXIMUM, 0.0, 100.0);
     // -10 dB.
     h[MIN_DB] = bounded(DEFAULT_HIGH, -40.0, 0.0);
-    // 40 dB, so no stage is skipped: skipping at 30 and 20 dB dropped the SI-SDR
-    // improvement on noisy speech from 11 to 1 dB and saved no CPU.
+    // 40 dB: no stage is skipped (docs/deepfilternet3.md, Controls).
     h[MAX_DB_ERB] = bounded(DEFAULT_MAXIMUM, 0.0, 40.0);
     h[MAX_DB_DF] = bounded(DEFAULT_MAXIMUM, 0.0, 40.0);
     // 20 dB; capped at run time by the attenuation limit, so a low limit, which
@@ -225,6 +236,7 @@ impl<N: Network> Instance<N> {
     const ENGINE_DELAY: usize = FFT - 1 + N::LOOKAHEAD * HOP;
 
     fn new() -> Self {
+        const { assert!(VoiceGate::LAG > Self::ENGINE_DELAY) };
         Self {
             eng: Denoiser::new(),
             ports: [ptr::null_mut(); PORT_COUNT],
@@ -343,11 +355,11 @@ extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
     let _fp_env = DenormalGuard::new();
     let n = n as usize;
 
-    if let Some(db) = inst.control(ATTEN) {
-        if db != inst.last_atten_db {
-            inst.eng.atten_lim = atten_lim_from_db(db);
-            inst.last_atten_db = db;
-        }
+    if let Some(db) = inst.control(ATTEN)
+        && db != inst.last_atten_db
+    {
+        inst.eng.atten_lim = atten_lim_from_db(db);
+        inst.last_atten_db = db;
     }
     if let Some(beta) = inst.control(POST_FILTER) {
         inst.eng.post_filter_beta = beta.clamp(0.0, 1.0);
@@ -371,6 +383,21 @@ extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
         inst.gate_on = gate_db > 0.0;
         inst.first_run = false;
     }
+    let p = inst.ports[LATENCY];
+    if !p.is_null() {
+        let gate_on = if inst.first_run {
+            gate_db > 0.0
+        } else {
+            inst.gate_on
+        };
+        let delay = if gate_on {
+            VoiceGate::LAG
+        } else {
+            Instance::<N>::ENGINE_DELAY
+        };
+        // SAFETY: a connected port points at host control storage valid during run().
+        unsafe { *p = delay as f32 };
+    }
     if inst.gate_on && gate_db != inst.last_gate_db {
         inst.gate.set_depth(gate_db);
         inst.last_gate_db = gate_db;
@@ -390,8 +417,13 @@ extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
         for (k, s) in slice[..len].iter_mut().enumerate() {
             // SAFETY: the host connected the input to at least `n` samples.
             let x = unsafe { *input.add(start + k) };
-            // A NaN would pass the silence test and poison the GRU state for good.
-            *s = if x.is_finite() { x } else { 0.0 };
+            // A NaN would pass the silence test and poison the GRU state for good,
+            // and so would a finite value large enough to overflow the spectrum.
+            *s = if x.is_finite() {
+                x.clamp(-MAX_INPUT, MAX_INPUT)
+            } else {
+                0.0
+            };
         }
         if inst.gate_on {
             inst.gate.feed(&slice[..len]);

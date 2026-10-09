@@ -1,7 +1,7 @@
 //! Layers both networks have in the same shape. Activations are `[CH][width]`.
 
 use crate::{CH, NB_DF, NB_ERB};
-use dfn_ops::{dw_row_k3s1_accum, pointwise_conv2d, relu_inplace};
+use ops::{dw_row_k3s1_accum, pointwise_conv2d, relu_inplace};
 
 /// `erb_conv0`: Conv2d(1, CH, 3x3) over the last three ERB feature frames, + ReLU.
 /// `pad` holds the two previous frames.
@@ -156,10 +156,10 @@ impl DfConvp {
                 let co_abs = g * cpg_out + co;
                 let dst = &mut self.dw_out[co_abs * NB_DF..co_abs * NB_DF + NB_DF];
                 #[cfg(target_arch = "x86_64")]
-                if dfn_ops::simd_tier() >= 2 {
+                if ops::simd_tier() >= 2 {
                     let taps = &dw[co_abs * cpg_in * kh..(co_abs + 1) * cpg_in * kh];
-                    // SAFETY: AVX was detected at run time; every slice is
-                    // bounds-checked inside.
+                    // SAFETY: tier 2 and up means AVX, the only requirement of this
+                    // safe `#[target_feature]` function.
                     unsafe { convp_taps_avx(dst, &self.pad, c0, taps, g * cpg_in, self.head) };
                     continue;
                 }
@@ -212,7 +212,7 @@ impl DfConvp {
 /// with a separate multiply and add, so the sum is bit-identical to the scalar loop.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
-unsafe fn convp_taps_avx(
+fn convp_taps_avx(
     dst: &mut [f32],
     pad: &[f32],
     c0: &[f32],
@@ -226,7 +226,8 @@ unsafe fn convp_taps_avx(
     assert!(dst.len() == NB_DF && taps.len() == cpg_in * CONVP_TAPS);
     let mut acc = [_mm256_setzero_ps(); LANES];
     for (l, a) in acc.iter_mut().enumerate() {
-        *a = _mm256_loadu_ps(dst.as_ptr().add(l * 8));
+        // SAFETY: `l * 8 + 8 <= NB_DF`, the asserted length of `dst`.
+        *a = unsafe { _mm256_loadu_ps(dst.as_ptr().add(l * 8)) };
     }
     for ci in 0..cpg_in {
         let ci_abs = ci_base + ci;
@@ -239,14 +240,14 @@ unsafe fn convp_taps_avx(
             };
             let w = _mm256_set1_ps(taps[ci * CONVP_TAPS + k]);
             for (l, a) in acc.iter_mut().enumerate() {
-                *a = _mm256_add_ps(
-                    *a,
-                    _mm256_mul_ps(_mm256_loadu_ps(src.as_ptr().add(l * 8)), w),
-                );
+                // SAFETY: `src` holds `NB_DF` values and `l * 8 + 8 <= NB_DF`.
+                let x = unsafe { _mm256_loadu_ps(src.as_ptr().add(l * 8)) };
+                *a = _mm256_add_ps(*a, _mm256_mul_ps(x, w));
             }
         }
     }
     for (l, a) in acc.iter().enumerate() {
-        _mm256_storeu_ps(dst.as_mut_ptr().add(l * 8), *a);
+        // SAFETY: `l * 8 + 8 <= NB_DF`, the asserted length of `dst`.
+        unsafe { _mm256_storeu_ps(dst.as_mut_ptr().add(l * 8), *a) };
     }
 }

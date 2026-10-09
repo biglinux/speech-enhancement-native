@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """WebRTC AEC runner: drives the shipped libspa-aec-webrtc via the C harness.
 
-  python3 run_webrtc.py --bin <run_webrtc> --plugin <so> --testset <ts> --out <dir>
+python3 run_webrtc.py --bin <run_webrtc> --plugin <so> --testset <ts> --out <dir>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,8 +21,24 @@ PLUGIN = "/usr/lib/spa-0.2/aec/libspa-aec-webrtc.so"
 
 
 def wav_to_f32(path: Path, rate: int) -> np.ndarray:
-    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-ar", str(rate),
-                          "-ac", "1", "-f", "f32le", "-"], check=True, capture_output=True)
+    out = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-ar",
+            str(rate),
+            "-ac",
+            "1",
+            "-f",
+            "f32le",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    )
     return np.frombuffer(out.stdout, np.float32)
 
 
@@ -48,23 +65,41 @@ def main() -> None:
                     x = wav_to_f32(base / f"{name}.wav", rate)
                     x.tofile(tmp / f"{name}.f32")
                 t0 = time.perf_counter()
-                subprocess.run([str(binp), args.plugin, str(rate),
-                                str(tmp / "mic.f32"), str(tmp / "ref.f32"), str(tmp / "out.f32")],
-                               check=True, capture_output=True)
+                subprocess.run(
+                    [
+                        str(binp),
+                        args.plugin,
+                        str(rate),
+                        str(tmp / "mic.f32"),
+                        str(tmp / "ref.f32"),
+                        str(tmp / "out.f32"),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
                 proc_s += time.perf_counter() - t0
                 cleaned = np.fromfile(tmp / "out.f32", np.float32)
                 audio_s += len(cleaned) / rate
                 d = out / f"{rate}" / scen
                 d.mkdir(parents=True, exist_ok=True)
-                sf.write(str(d / "cleaned.wav"), np.clip(cleaned, -1, 1), rate, subtype="FLOAT")
+                sf.write(
+                    str(d / "cleaned.wav"),
+                    np.clip(cleaned, -1, 1),
+                    rate,
+                    subtype="FLOAT",
+                )
     rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
-    print(json.dumps({
-        "name": "webrtc",
-        "rt_factor": round(proc_s / audio_s, 4),
-        "latency_ms": lat,
-        "peak_rss_mb": round(rss, 1),
-        "weight_kb": 0,
-    }))
+    print(
+        json.dumps(
+            {
+                "name": "webrtc",
+                "rt_factor": round(proc_s / audio_s, 4),
+                "latency_ms": lat,
+                "peak_rss_mb": round(rss, 1),
+                "weight_kb": 0,
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

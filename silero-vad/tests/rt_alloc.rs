@@ -1,37 +1,10 @@
 //! The gate runs inside the plugins' real-time `run()`: after warm-up, feeding input
 //! and asking for gains must not touch the heap, at any host block size.
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+#[path = "../../testdata/heap_calls.rs"]
+mod heap_calls;
 
-use silero_vad::{VoiceGate, CHUNK_48K};
-
-thread_local! {
-    static ARMED: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-}
-
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if ARMED.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
-        }
-        unsafe { System.alloc(l) }
-    }
-    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        unsafe { System.dealloc(p, l) }
-    }
-    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if ARMED.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
-        }
-        unsafe { System.realloc(p, l, n) }
-    }
-}
-
-#[global_allocator]
-static GA: Counting = Counting;
+use heap_calls::heap_calls;
+use silero_vad::{CHUNK_48K, VoiceGate};
 
 fn tone(n: usize) -> Vec<f32> {
     (0..n)
@@ -49,16 +22,16 @@ fn feeding_and_gating_never_allocate_after_warm_up() {
         for piece in input[..CHUNK_48K * 2].chunks(block) {
             gate.feed(piece);
         }
-        ARMED.with(|a| a.set(true));
-        for piece in input[CHUNK_48K * 2..].chunks(block) {
-            gate.feed(piece);
-            for _ in piece {
-                gate.gain(t);
-                t += 1;
+        let calls = heap_calls(|| {
+            for piece in input[CHUNK_48K * 2..].chunks(block) {
+                gate.feed(piece);
+                for _ in piece {
+                    gate.gain(t);
+                    t += 1;
+                }
             }
-        }
-        ARMED.with(|a| a.set(false));
-        assert_eq!(ALLOCS.with(Cell::get), 0, "block {block} allocated");
+        });
+        assert_eq!(calls, 0, "block {block} allocated");
     }
 }
 

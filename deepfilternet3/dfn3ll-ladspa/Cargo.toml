@@ -1,16 +1,17 @@
 [package]
 name = "dfn3ll-ladspa"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-description = "Independent Rust reimplementation of DeepFilterNet3-LL (low-latency) streaming inference (LADSPA mono denoiser)"
-publish = false # cdylib LADSPA plugin, built to .so; never published to crates.io
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "DeepFilterNet3-LL (low-latency) LADSPA mono denoiser"
+publish.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-dfn-ops = { path = "../../ops" }
+ops = { path = "../../ops" }
 dfn3-plugin = { path = "../dfn3-plugin" }
 
 [dev-dependencies]
@@ -19,5 +20,8 @@ silero-vad = { path = "../../silero-vad" }
 [features]
 # Diagnostics: cap the SIMD tier the project kernels select at run time, to
 # compare tiers on one machine. Never enabled by a package build.
-force-sse41 = ["dfn-ops/force-sse41"]
-force-avx1 = ["dfn-ops/force-avx1"]
+force-sse41 = ["ops/force-sse41"]
+force-avx1 = ["ops/force-avx1"]
+
+[lints]
+workspace = true

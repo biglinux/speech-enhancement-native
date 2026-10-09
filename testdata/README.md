@@ -13,3 +13,7 @@ espeak-ng -v en-us -s 130 -w continuous-speech.wav \
     'We are evaluating the microphone recording quality continuously during this conversation.'
 ffmpeg -nostdin -v error -i continuous-speech.wav -ar 48000 -ac 1 -t 3 -f s16le continuous-speech.pcm
 ```
+
+`heap_calls.rs` is the counting global allocator that the real-time tests and the
+DPDFNet benchmark include with `#[path]` to prove a processing path never
+touches the heap.

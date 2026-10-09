@@ -1,7 +1,7 @@
-//! LADSPA 1.1 ABI, explicitly using int for bitfields and unsigned long for indices.
+//! LADSPA 1.1 plugin. The ABI uses int for bitfields and unsigned long for indices.
 //! No initialization, locks, files, logging, worker waits or allocations in run().
-use crate::{no_unwind, AudioProcessor, Bundle};
-use dfn_ops::DenormalGuard;
+use crate::{AudioProcessor, Bundle, no_unwind};
+use ops::DenormalGuard;
 use std::{
     ffi::{c_char, c_int, c_ulong, c_void},
     sync::{Arc, Mutex, PoisonError, Weak},
@@ -47,6 +47,7 @@ pub struct Descriptor {
 // SAFETY: descriptor and all pointed-to metadata are immutable statics. Host may not mutate them.
 unsafe impl Sync for Descriptor {}
 struct Names([*const c_char; 5]);
+// SAFETY: the names point to immutable C string literals.
 unsafe impl Sync for Names {}
 static PORTS: [c_int; 5] = [
     PORT_INPUT | PORT_AUDIO,
@@ -153,22 +154,24 @@ unsafe extern "C" fn instantiate(_: *const Descriptor, rate: c_ulong) -> *mut c_
     })
 }
 unsafe extern "C" fn connect(h: *mut c_void, p: c_ulong, data: *mut f32) {
-    if let Some(i) = unsafe { h.cast::<Instance>().as_mut() } {
-        if p < 5 {
-            i.ports[p as usize] = data;
-        }
+    // SAFETY: the host passes null or a handle from instantiate() that is not
+    // used concurrently (LADSPA 1.1 instance contract).
+    if let Some(i) = unsafe { h.cast::<Instance>().as_mut() }
+        && p < 5
+    {
+        i.ports[p as usize] = data;
     }
 }
+// Ports may be connected after activate, so the control is first read by the
+// next run, where it applies without a ramp.
 unsafe extern "C" fn activate(h: *mut c_void) {
+    // SAFETY: the host passes null or a handle from instantiate() that is not
+    // used concurrently (LADSPA 1.1 instance contract).
     let Some(i) = (unsafe { h.cast::<Instance>().as_mut() }) else {
         return;
     };
-    let control = i.ports[2];
     let audio = &mut i.audio;
     if !no_unwind(false, || {
-        if !control.is_null() {
-            audio.set_attenuation_db(unsafe { *control });
-        }
         audio.reset();
         true
     }) {
@@ -176,6 +179,8 @@ unsafe extern "C" fn activate(h: *mut c_void) {
     }
 }
 unsafe extern "C" fn run(h: *mut c_void, n: c_ulong) {
+    // SAFETY: the host passes null or a handle from instantiate() that is not
+    // used concurrently (LADSPA 1.1 instance contract).
     let Some(i) = (unsafe { h.cast::<Instance>().as_mut() }) else {
         return;
     };
@@ -188,33 +193,41 @@ unsafe extern "C" fn run(h: *mut c_void, n: c_ulong) {
     let db = if control.is_null() {
         100.0
     } else {
+        // SAFETY: a connected control port points to one float.
         unsafe { *control }
     };
     let audio = &mut i.audio;
     let ran = no_unwind(false, || {
         audio.set_attenuation_db(db);
         for p in 0..n {
-            // Raw read before raw write permits the input and output ports to alias exactly.
+            // SAFETY: the host connects audio buffers of at least `n` samples.
+            // Raw read before raw write permits the ports to alias exactly.
             let x = unsafe { input.add(p).read() };
             let y = audio.sample(x);
+            // SAFETY: as above.
             unsafe { output.add(p).write(y) };
         }
         true
     });
     if !ran {
         audio.latch_fault();
+        // SAFETY: the output buffer holds at least `n` samples.
         unsafe { std::ptr::write_bytes(output, 0, n) };
     }
     if !latency.is_null() {
+        // SAFETY: connected control ports point to one float each.
         unsafe { *latency = crate::audio::LATENCY as f32 };
     }
     if !fault.is_null() {
+        // SAFETY: as above.
         unsafe { *fault = if audio.faulted() { 1.0 } else { 0.0 } };
     }
 }
 unsafe extern "C" fn cleanup(h: *mut c_void) {
     no_unwind((), || {
         if !h.is_null() {
+            // SAFETY: `h` came from `Box::into_raw` in instantiate(), and the host
+            // calls cleanup once and never uses the handle afterwards.
             drop(unsafe { Box::from_raw(h.cast::<Instance>()) });
         }
         let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -223,11 +236,7 @@ unsafe extern "C" fn cleanup(h: *mut c_void) {
         }
     });
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ladspa_descriptor(index: c_ulong) -> *const Descriptor {
-    if index == 0 {
-        &DESC
-    } else {
-        std::ptr::null()
-    }
+    if index == 0 { &DESC } else { std::ptr::null() }
 }

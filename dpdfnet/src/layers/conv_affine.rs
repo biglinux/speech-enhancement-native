@@ -4,25 +4,34 @@
 use super::{Activation, Conv, View};
 use std::arch::x86_64::*;
 
+/// # Safety
+/// The CPU must support AVX, and `y` must be valid for writing eight values.
 #[target_feature(enable = "avx")]
 unsafe fn relu_store(y: *mut f32, x: __m256) {
-    let z = _mm256_setzero_ps();
-    let special = _mm256_movemask_ps(_mm256_or_ps(
-        _mm256_cmp_ps::<{ _CMP_EQ_OQ }>(x, z),
-        _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(x, x),
-    )) as u32;
-    _mm256_storeu_ps(y, _mm256_max_ps(x, z));
-    if special != 0 {
-        let mut raw = [0.0f32; 8];
-        _mm256_storeu_ps(raw.as_mut_ptr(), x);
-        for (i, &v) in raw.iter().enumerate() {
-            if special & (1 << i) != 0 {
-                *y.add(i) = v.max(0.0);
+    // SAFETY: every store covers `y[..8]`, which the caller guarantees, or the
+    // local eight-value buffer.
+    unsafe {
+        let z = _mm256_setzero_ps();
+        let special = _mm256_movemask_ps(_mm256_or_ps(
+            _mm256_cmp_ps::<{ _CMP_EQ_OQ }>(x, z),
+            _mm256_cmp_ps::<{ _CMP_UNORD_Q }>(x, x),
+        )) as u32;
+        _mm256_storeu_ps(y, _mm256_max_ps(x, z));
+        if special != 0 {
+            let mut raw = [0.0f32; 8];
+            _mm256_storeu_ps(raw.as_mut_ptr(), x);
+            for (i, &v) in raw.iter().enumerate() {
+                if special & (1 << i) != 0 {
+                    *y.add(i) = v.max(0.0);
+                }
             }
         }
     }
 }
 
+/// # Safety
+/// The CPU must support AVX, and the kernel contract of `conv_fast` must hold for
+/// a 64-channel depthwise 1x1 convolution.
 #[target_feature(enable = "avx")]
 pub(super) unsafe fn affine(
     c: &Conv,
@@ -32,54 +41,59 @@ pub(super) unsafe fn affine(
     spacing: usize,
     offset: usize,
 ) {
-    for j in (0..64).step_by(32) {
-        let w0 = _mm256_loadu_ps(c.w.as_ptr().add(j));
-        let b0 = _mm256_loadu_ps(c.b.as_ptr().add(j));
-        let w1 = _mm256_loadu_ps(c.w.as_ptr().add(j + 8));
-        let b1 = _mm256_loadu_ps(c.b.as_ptr().add(j + 8));
-        let w2 = _mm256_loadu_ps(c.w.as_ptr().add(j + 16));
-        let b2 = _mm256_loadu_ps(c.b.as_ptr().add(j + 16));
-        let w3 = _mm256_loadu_ps(c.w.as_ptr().add(j + 24));
-        let b3 = _mm256_loadu_ps(c.b.as_ptr().add(j + 24));
-        for f in 0..of {
-            let xi = f * c.stride;
-            let y = out.as_mut_ptr().add(f * spacing + offset + j);
-            let valid = xi >= c.pad && xi - c.pad < x.f;
-            let row = if valid {
-                x.data.as_ptr().add((xi - c.pad) * 64 + j)
-            } else {
-                std::ptr::null()
-            };
-            let a0 = if valid {
-                _mm256_add_ps(b0, _mm256_mul_ps(_mm256_loadu_ps(row.add(0)), w0))
-            } else {
-                b0
-            };
-            let a1 = if valid {
-                _mm256_add_ps(b1, _mm256_mul_ps(_mm256_loadu_ps(row.add(8)), w1))
-            } else {
-                b1
-            };
-            let a2 = if valid {
-                _mm256_add_ps(b2, _mm256_mul_ps(_mm256_loadu_ps(row.add(16)), w2))
-            } else {
-                b2
-            };
-            let a3 = if valid {
-                _mm256_add_ps(b3, _mm256_mul_ps(_mm256_loadu_ps(row.add(24)), w3))
-            } else {
-                b3
-            };
-            if matches!(c.act, Activation::Relu) {
-                relu_store(y.add(0), a0);
-                relu_store(y.add(8), a1);
-                relu_store(y.add(16), a2);
-                relu_store(y.add(24), a3);
-            } else {
-                _mm256_storeu_ps(y.add(0), a0);
-                _mm256_storeu_ps(y.add(8), a1);
-                _mm256_storeu_ps(y.add(16), a2);
-                _mm256_storeu_ps(y.add(24), a3);
+    // SAFETY: `c.w` and `c.b` hold 64 values, read in 8-wide groups below 64; a
+    // valid input position reads row `xi - c.pad < x.f` of 64 values, and each
+    // store covers 32 channels of output position `f < of`, inside `out`.
+    unsafe {
+        for j in (0..64).step_by(32) {
+            let w0 = _mm256_loadu_ps(c.w.as_ptr().add(j));
+            let b0 = _mm256_loadu_ps(c.b.as_ptr().add(j));
+            let w1 = _mm256_loadu_ps(c.w.as_ptr().add(j + 8));
+            let b1 = _mm256_loadu_ps(c.b.as_ptr().add(j + 8));
+            let w2 = _mm256_loadu_ps(c.w.as_ptr().add(j + 16));
+            let b2 = _mm256_loadu_ps(c.b.as_ptr().add(j + 16));
+            let w3 = _mm256_loadu_ps(c.w.as_ptr().add(j + 24));
+            let b3 = _mm256_loadu_ps(c.b.as_ptr().add(j + 24));
+            for f in 0..of {
+                let xi = f * c.stride;
+                let y = out.as_mut_ptr().add(f * spacing + offset + j);
+                let valid = xi >= c.pad && xi - c.pad < x.f;
+                let row = if valid {
+                    x.data.as_ptr().add((xi - c.pad) * 64 + j)
+                } else {
+                    std::ptr::null()
+                };
+                let a0 = if valid {
+                    _mm256_add_ps(b0, _mm256_mul_ps(_mm256_loadu_ps(row.add(0)), w0))
+                } else {
+                    b0
+                };
+                let a1 = if valid {
+                    _mm256_add_ps(b1, _mm256_mul_ps(_mm256_loadu_ps(row.add(8)), w1))
+                } else {
+                    b1
+                };
+                let a2 = if valid {
+                    _mm256_add_ps(b2, _mm256_mul_ps(_mm256_loadu_ps(row.add(16)), w2))
+                } else {
+                    b2
+                };
+                let a3 = if valid {
+                    _mm256_add_ps(b3, _mm256_mul_ps(_mm256_loadu_ps(row.add(24)), w3))
+                } else {
+                    b3
+                };
+                if matches!(c.act, Activation::Relu) {
+                    relu_store(y.add(0), a0);
+                    relu_store(y.add(8), a1);
+                    relu_store(y.add(16), a2);
+                    relu_store(y.add(24), a3);
+                } else {
+                    _mm256_storeu_ps(y.add(0), a0);
+                    _mm256_storeu_ps(y.add(8), a1);
+                    _mm256_storeu_ps(y.add(16), a2);
+                    _mm256_storeu_ps(y.add(24), a3);
+                }
             }
         }
     }
@@ -104,6 +118,7 @@ mod activation_tests {
             -2.0,
         ];
         let mut out = [0.0f32; 8];
+        // SAFETY: AVX was just detected; both buffers hold eight values.
         unsafe {
             relu_store(out.as_mut_ptr(), _mm256_loadu_ps(values.as_ptr()));
         }

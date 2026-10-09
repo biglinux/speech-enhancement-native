@@ -31,7 +31,7 @@ pub fn lpf_prototype_48k() -> Vec<f32> {
 pub const LPF_DELAY: usize = HALF * RATIO;
 
 /// Windowed-sinc low-pass prototype at cutoff `fc` (cycles/sample in the higher-rate
-/// domain), length `2*HALF*RATIO+1`, Hann-windowed, normalised to unity DC.
+/// domain), length `2*HALF*RATIO+1`, Hann-windowed, normalized to unity DC.
 fn prototype(fc: f32) -> Vec<f32> {
     let n = 2 * HALF * RATIO + 1;
     let mut h = vec![0.0f32; n];

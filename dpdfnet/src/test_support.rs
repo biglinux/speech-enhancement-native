@@ -1,6 +1,6 @@
-//! Synthetic fixtures for kernel tests. These are NOT trained audio models.
+//! Synthetic fixtures for kernel tests, not trained models.
 use crate::weights::Bundle;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 

@@ -4,6 +4,7 @@
   python3 run_localvqe.py --bin <localvqe> --model <gguf> --name <label> \
       --testset <ts> --out <dir>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,19 +36,33 @@ def main() -> None:
         d = out / "16000" / scen
         d.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
-        subprocess.run([str(binp), str(model), "--in-wav", str(base / "mic.wav"),
-                        str(base / "ref.wav"), "--out-wav", str(d / "cleaned.wav")],
-                       check=True, capture_output=True)
+        subprocess.run(
+            [
+                str(binp),
+                str(model),
+                "--in-wav",
+                str(base / "mic.wav"),
+                str(base / "ref.wav"),
+                "--out-wav",
+                str(d / "cleaned.wav"),
+            ],
+            check=True,
+            capture_output=True,
+        )
         proc_s += time.perf_counter() - t0
         audio_s += sf.info(str(base / "mic.wav")).duration
     rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
-    print(json.dumps({
-        "name": args.name,
-        "rt_factor": round(proc_s / audio_s, 4),
-        "latency_ms": {"16000": 16.0},  # 256-sample streaming hop
-        "peak_rss_mb": round(rss, 1),
-        "weight_kb": round(os.path.getsize(model) / 1024, 1),
-    }))
+    print(
+        json.dumps(
+            {
+                "name": args.name,
+                "rt_factor": round(proc_s / audio_s, 4),
+                "latency_ms": {"16000": 16.0},  # 256-sample streaming hop
+                "peak_rss_mb": round(rss, 1),
+                "weight_kb": round(os.path.getsize(model) / 1024, 1),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

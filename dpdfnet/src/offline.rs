@@ -9,17 +9,17 @@
 //! thread count. The recording is preceded by its opening half second played
 //! backwards, the lead-in the converters put in front of the plugin.
 use crate::{
-    audio::{bounded_input, Analysis, Synthesis, LATENCY},
+    AudioProcessor, Bundle, HOP, Result,
+    audio::{Analysis, LATENCY, Synthesis, bounded_input},
     model::{Frame, Stage},
-    AudioProcessor, Bundle, Result, HOP,
 };
-use dfn_ops::DenormalGuard;
+use ops::DenormalGuard;
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{ErrorKind, Read, Write},
     sync::{
-        mpsc::{self, Receiver, SyncSender},
         Arc,
+        mpsc::{self, Receiver, SyncSender},
     },
     thread::{self, Scope},
 };
@@ -101,10 +101,10 @@ fn start_channel<'scope>(
     feed: Receiver<Option<Vec<f32>>>,
     out: &Sink,
 ) -> Result<()> {
-    // Control, then activate: the order the LADSPA host uses.
+    // Activate, then the control of the first run, as the plugin sees them.
     let mut processor = AudioProcessor::new(bundle.clone())?;
-    processor.set_attenuation_db(attenuation_db);
     processor.reset();
+    processor.set_attenuation_db(attenuation_db);
     let (analysis, model, synthesis, dry_mix) = processor.into_parts();
     let stages = group(model.into_stages(), pins.len());
     let (free_tx, free_rx) = mpsc::sync_channel(stages.len() + 3);
@@ -146,19 +146,23 @@ fn start_channel<'scope>(
     Ok(())
 }
 
-/// Stage threads to use by default: one per physical core of the fastest kind.
+/// Stage threads to use by default: one per physical core of the fastest kind,
+/// at most 256.
 pub fn default_threads() -> usize {
-    match stage_cpus().1 {
+    let n = match stage_cpus().1 {
         0 => thread::available_parallelism().map_or(1, usize::from),
         n => n,
-    }
+    };
+    n.min(256)
 }
 
 /// CPUs for the stage threads, best first: one per physical core, fastest
-/// cores first, then the other hardware threads; and how many cores share the
-/// top frequency. Two stages on the hyperthreads of one core run the SIMD
-/// kernels at about half speed, and the scheduler, waking a stage near the
-/// stage that woke it, puts them there; so every stage thread is pinned.
+/// cores first, then the other hardware threads; and how many cores run within
+/// 10% of the top frequency, which also counts cores that firmware rates a step
+/// apart (favoured or preferred cores). Two stages on the hyperthreads of one
+/// core run the SIMD kernels at about half speed, and the scheduler, waking a
+/// stage near the stage that woke it, puts them there; so every stage thread is
+/// pinned.
 fn stage_cpus() -> (Vec<usize>, usize) {
     let mut cores: BTreeMap<String, (u64, Vec<usize>)> = BTreeMap::new();
     for cpu in allowed_cpus() {
@@ -174,7 +178,11 @@ fn stage_cpus() -> (Vec<usize>, usize) {
     }
     let mut cores: Vec<(u64, Vec<usize>)> = cores.into_values().collect();
     cores.sort_by_key(|(freq, cpus)| (std::cmp::Reverse(*freq), cpus[0]));
-    let fast = cores.iter().filter(|c| c.0 == cores[0].0).count();
+    let top = cores.first().map_or(0, |c| c.0);
+    let fast = cores
+        .iter()
+        .filter(|c| c.0.saturating_mul(10) >= top.saturating_mul(9))
+        .count();
     let mut order: Vec<usize> = cores.iter().map(|c| c.1[0]).collect();
     order.extend(cores.iter().flat_map(|c| c.1[1..].iter().copied()));
     (order, fast)
@@ -322,6 +330,7 @@ fn sink(
     free: &SyncSender<Box<Frame>>,
     out: &Sink,
 ) -> Result<()> {
+    let _denormals = DenormalGuard::new();
     let mut skip = LEAD_IN + LATENCY;
     let mut sent = 0;
     let mut block = Vec::with_capacity(BLOCK + 2 * HOP);
@@ -336,9 +345,7 @@ fn sink(
     while let Ok(next) = hops.recv() {
         match next {
             Hop::Frame(frame) => {
-                if frame.spec.iter().any(|v| !v.is_finite())
-                    || !synthesis.run(&frame.spec, &mut hop)
-                {
+                if !synthesis.run(&frame.spec, &mut hop) {
                     return Err(format!("processing fault in channel {channel}"));
                 }
                 let _ = free.send(frame);

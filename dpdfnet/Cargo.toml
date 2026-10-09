@@ -1,17 +1,17 @@
 [package]
 name = "dpdfnet-native"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-description = "Native Rust DPDFNet-2 48 kHz HR engine (W8A16) and LADSPA plugin"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "DPDFNet-2 48 kHz HR engine, LADSPA plugin and whole-file enhancer"
+publish.workspace = true
 
 [lib]
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-dfn-ops = { path = "../ops" }
-dpdfnet-ops = { path = "ops" }
+ops = { path = "../ops" }
 libc = "0.2"
 realfft = "3.5"
 serde_json = "1"
@@ -20,5 +20,8 @@ sha2 = "0.10"
 [features]
 # Diagnostics: cap the SIMD tier the project kernels select at run time, to
 # compare tiers on one machine. Never enabled by a package build.
-force-sse41 = ["dpdfnet-ops/force-sse41"]
-force-avx1 = ["dpdfnet-ops/force-avx1"]
+force-sse41 = ["ops/force-sse41"]
+force-avx1 = ["ops/force-avx1"]
+
+[lints]
+workspace = true

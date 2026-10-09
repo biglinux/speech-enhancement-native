@@ -6,17 +6,17 @@
 
 mod weights;
 
-use dfn3_plugin::ladspa::{descriptor, Descriptor};
-use dfn3_plugin::layers::{conv_p_add, convt_up, df_conv0, erb_conv0, DfConvp};
-use dfn3_plugin::{AlignedBlob, Denoiser, Tensors, CH, DF_COEFS, NB_DF, NB_ERB};
-use dfn_ops::gru_cell_packed as gru;
-use dfn_ops::{dw_row_k3s1_accum, dw_row_k3s2_accum, grouped_linear, pointwise_conv2d};
-use dfn_ops::{relu_inplace, sigmoid, vadd};
+use dfn3_plugin::ladspa::{Descriptor, descriptor};
+use dfn3_plugin::layers::{DfConvp, conv_p_add, convt_up, df_conv0, erb_conv0};
+use dfn3_plugin::{AlignedBlob, CH, DF_COEFS, Denoiser, NB_DF, NB_ERB, Tensors};
+use ops::gru_cell_packed as gru;
+use ops::{dw_row_k3s1_accum, dw_row_k3s2_accum, grouped_linear, pointwise_conv2d};
+use ops::{relu_inplace, sigmoid, vadd};
 use std::os::raw::c_ulong;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use weights::W;
 
-pub use dfn3_plugin::{atten_lim_from_db, HOP, SR};
+pub use dfn3_plugin::HOP;
 
 /// The DeepFilterNet3 denoiser.
 pub type Dfn3 = Denoiser<Dfn3Network>;
@@ -39,7 +39,7 @@ pub static DESCRIPTOR: Descriptor = descriptor::<Dfn3Network>(
 );
 
 /// LADSPA host entry point.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ladspa_descriptor(index: c_ulong) -> *const Descriptor {
     if index == 0 {
         &DESCRIPTOR
@@ -50,7 +50,7 @@ pub extern "C" fn ladspa_descriptor(index: c_ulong) -> *const Descriptor {
 
 /// The DeepFilterNet3 encoder, ERB decoder and deep-filter decoder.
 pub struct Dfn3Network {
-    w: Arc<W>,
+    w: &'static W,
     erb0_pad: Vec<f32>,
     df0_pad: Vec<f32>,
     e0: Vec<f32>,
@@ -83,15 +83,15 @@ impl dfn3_plugin::Network for Dfn3Network {
     const LOOKAHEAD: usize = 2;
 
     fn embedded() -> Self {
-        static SHARED: OnceLock<Arc<W>> = OnceLock::new();
+        static SHARED: OnceLock<W> = OnceLock::new();
         let w = SHARED.get_or_init(|| {
-            Arc::new(W(Tensors::embedded(
+            W(Tensors::embedded(
                 &WEIGHTS,
-                dfn_ops::pack_format::Geometry::DFN3,
-            )))
+                ops::pack_format::Geometry::DFN3,
+            ))
         });
         Self {
-            w: w.clone(),
+            w,
             erb0_pad: vec![0.0; 2 * NB_ERB],
             df0_pad: vec![0.0; 2 * 2 * NB_DF],
             e0: vec![0.0; CH * NB_ERB],
@@ -136,7 +136,7 @@ impl dfn3_plugin::Network for Dfn3Network {
 
 impl Dfn3Network {
     fn encoder(&mut self, feat_erb: &[f32], feat_spec: &[f32]) -> f32 {
-        let w = &*self.w;
+        let w = self.w;
         erb_conv0(
             &mut self.e0,
             &mut self.erb0_pad,
@@ -256,7 +256,7 @@ impl Dfn3Network {
     }
 
     fn erb_decoder(&mut self, erb_mask: &mut [f32; NB_ERB]) {
-        let w = &*self.w;
+        let w = self.w;
         grouped_linear(
             &mut self.sc_hid,
             &self.emb,
@@ -386,7 +386,7 @@ impl Dfn3Network {
     }
 
     fn df_decoder(&mut self, coefs: &mut [f32; DF_COEFS]) {
-        let w = &*self.w;
+        let w = self.w;
         grouped_linear(&mut self.sc_hid, &self.emb, w.df_gru_lin_in_w(), 8, 64, 32);
         relu_inplace(&mut self.sc_hid);
         gru(

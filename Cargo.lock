@@ -3,14 +3,6 @@
 version = 4
 
 [[package]]
-name = "aec-gtcrn"
-version = "0.1.0"
-dependencies = [
- "dfn-ops",
- "realfft",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -51,14 +43,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "dfn-ops"
+name = "dfn3-ladspa"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "dfn3-plugin",
+ "ops",
+ "silero-vad",
 ]
 
 [[package]]
-name = "dfn-tools"
+name = "dfn3-plugin"
+version = "0.1.0"
+dependencies = [
+ "ops",
+ "realfft",
+ "silero-vad",
+]
+
+[[package]]
+name = "dfn3-tools"
 version = "0.1.0"
 dependencies = [
  "dfn3-ladspa",
@@ -67,29 +70,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "dfn3-ladspa"
-version = "0.1.0"
-dependencies = [
- "dfn-ops",
- "dfn3-plugin",
- "silero-vad",
-]
-
-[[package]]
-name = "dfn3-plugin"
-version = "0.1.0"
-dependencies = [
- "dfn-ops",
- "realfft",
- "silero-vad",
-]
-
-[[package]]
 name = "dfn3ll-ladspa"
 version = "0.1.0"
 dependencies = [
- "dfn-ops",
  "dfn3-plugin",
+ "ops",
  "silero-vad",
 ]
 
@@ -107,17 +92,12 @@ dependencies = [
 name = "dpdfnet-native"
 version = "0.1.0"
 dependencies = [
- "dfn-ops",
- "dpdfnet-ops",
  "libc",
+ "ops",
  "realfft",
  "serde_json",
  "sha2",
 ]
-
-[[package]]
-name = "dpdfnet-ops"
-version = "0.1.0"
 
 [[package]]
 name = "generic-array"
@@ -127,6 +107,14 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "gtcrn-aec"
+version = "0.1.0"
+dependencies = [
+ "ops",
+ "realfft",
 ]
 
 [[package]]
@@ -176,6 +164,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "ops"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -285,15 +280,15 @@ dependencies = [
 name = "silero-vad"
 version = "0.1.0"
 dependencies = [
- "dfn-ops",
+ "ops",
 ]
 
 [[package]]
 name = "spa-aec-gtcrn"
 version = "0.1.0"
 dependencies = [
- "aec-gtcrn",
- "dfn-ops",
+ "gtcrn-aec",
+ "ops",
 ]
 
 [[package]]

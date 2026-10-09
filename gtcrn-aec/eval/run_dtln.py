@@ -7,6 +7,7 @@ learned time-domain, overlap-add. Runs over the 16 kHz test set.
 
   python3 run_dtln.py --size 128 --models <dir> --testset <ts> --out <dir>
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,9 +41,9 @@ def process(mic: np.ndarray, lpb: np.ndarray, it1: Interpreter, it2: Interpreter
     t0 = time.perf_counter()
     for k in range(nblk):
         inbuf[:-SHIFT] = inbuf[SHIFT:]
-        inbuf[-SHIFT:] = audio[k * SHIFT:k * SHIFT + SHIFT]
+        inbuf[-SHIFT:] = audio[k * SHIFT : k * SHIFT + SHIFT]
         lpbuf[:-SHIFT] = lpbuf[SHIFT:]
-        lpbuf[-SHIFT:] = lpb[k * SHIFT:k * SHIFT + SHIFT]
+        lpbuf[-SHIFT:] = lpb[k * SHIFT : k * SHIFT + SHIFT]
         fft = np.fft.rfft(inbuf).astype("complex64")
         mag = np.abs(fft).reshape(1, 1, -1).astype("float32")
         lmag = np.abs(np.fft.rfft(lpbuf)).reshape(1, 1, -1).astype("float32")
@@ -62,9 +63,9 @@ def process(mic: np.ndarray, lpb: np.ndarray, it1: Interpreter, it2: Interpreter
         outbuf[:-SHIFT] = outbuf[SHIFT:]
         outbuf[-SHIFT:] = 0.0
         outbuf += np.squeeze(oblk)
-        out[k * SHIFT:k * SHIFT + SHIFT] = outbuf[:SHIFT]
+        out[k * SHIFT : k * SHIFT + SHIFT] = outbuf[:SHIFT]
     proc = time.perf_counter() - t0
-    return out[BLOCK - SHIFT:BLOCK - SHIFT + len(mic)], proc
+    return out[BLOCK - SHIFT : BLOCK - SHIFT + len(mic)], proc
 
 
 def main() -> None:
@@ -75,8 +76,10 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     md = Path(args.models).expanduser()
-    it1 = Interpreter(model_path=str(md / f"dtln_aec_{args.size}_1.tflite")); it1.allocate_tensors()
-    it2 = Interpreter(model_path=str(md / f"dtln_aec_{args.size}_2.tflite")); it2.allocate_tensors()
+    it1 = Interpreter(model_path=str(md / f"dtln_aec_{args.size}_1.tflite"))
+    it1.allocate_tensors()
+    it2 = Interpreter(model_path=str(md / f"dtln_aec_{args.size}_2.tflite"))
+    it2.allocate_tensors()
     ts = Path(args.testset).expanduser()
     out = Path(args.out).expanduser()
     proc_s = audio_s = 0.0
@@ -89,15 +92,26 @@ def main() -> None:
         audio_s += len(mic) / 16000
         d = out / "16000" / scen
         d.mkdir(parents=True, exist_ok=True)
-        sf.write(str(d / "cleaned.wav"), np.clip(cleaned, -1, 1), 16000, subtype="FLOAT")
-    weight_kb = sum(os.path.getsize(md / f"dtln_aec_{args.size}_{s}.tflite") for s in (1, 2)) / 1024
-    print(json.dumps({
-        "name": f"dtln_{args.size}",
-        "rt_factor": round(proc_s / audio_s, 4),
-        "latency_ms": {"16000": round(1000 * BLOCK / 16000, 1)},
-        "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
-        "weight_kb": round(weight_kb, 1),
-    }))
+        sf.write(
+            str(d / "cleaned.wav"), np.clip(cleaned, -1, 1), 16000, subtype="FLOAT"
+        )
+    weight_kb = (
+        sum(os.path.getsize(md / f"dtln_aec_{args.size}_{s}.tflite") for s in (1, 2))
+        / 1024
+    )
+    print(
+        json.dumps(
+            {
+                "name": f"dtln_{args.size}",
+                "rt_factor": round(proc_s / audio_s, 4),
+                "latency_ms": {"16000": round(1000 * BLOCK / 16000, 1)},
+                "peak_rss_mb": round(
+                    resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1
+                ),
+                "weight_kb": round(weight_kb, 1),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

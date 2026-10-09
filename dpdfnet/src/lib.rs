@@ -1,6 +1,5 @@
-//! Specialized streaming DPDFNet 48 kHz HR executor. No neural-network runtime.
-//! Python is used exclusively by the offline exporter and reference tests.
-use std::panic::{catch_unwind, AssertUnwindSafe};
+//! Streaming DPDFNet-2 48 kHz HR engine, its LADSPA plugin and a C API.
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub mod audio;
 mod ffi;

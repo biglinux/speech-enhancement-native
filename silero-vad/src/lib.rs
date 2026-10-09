@@ -9,10 +9,10 @@
 //! detector is the wrong place to take quantization risk. `vdot_f32` differs across SIMD
 //! tiers in the last bits, which can only move a decision that sits exactly on a threshold.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use dfn_ops::resample::{Down3, LPF_DELAY};
-use dfn_ops::{relu_inplace, sigmoid, vdot_f32};
+use ops::resample::{Down3, LPF_DELAY};
+use ops::{relu_inplace, sigmoid, vdot_f32};
 
 /// 16 kHz samples per decision (32 ms).
 pub const CHUNK: usize = 512;
@@ -27,7 +27,21 @@ const FRAMES: usize = (PADDED - WINDOW) / STRIDE + 1; // 4
 const BINS: usize = 129;
 const HIDDEN: usize = 128;
 
-static BLOB: &[u8] = include_bytes!("../model/silero_vad_16k.bin");
+const BLOB: &[u8] = include_bytes!("../model/silero_vad_16k.bin");
+/// f32 values in `BLOB`, tensor by tensor as `weights` reads them.
+const BLOB_FLOATS: usize = 258 * WINDOW
+    + (128 * BINS * 3 + 128)
+    + (64 * 128 * 3 + 64)
+    + (64 * 64 * 3 + 64)
+    + (128 * 64 * 3 + 128)
+    + 2 * 4 * HIDDEN * HIDDEN
+    + 2 * 4 * HIDDEN
+    + HIDDEN
+    + 1;
+const _: () = assert!(
+    BLOB.len() == BLOB_FLOATS * 4,
+    "Silero weight blob has the wrong size"
+);
 
 /// The weights, in the order `tools/export_weights.py` writes them.
 struct Weights {
@@ -40,53 +54,47 @@ struct Weights {
     head_bias: f32,
 }
 
-fn weights() -> Arc<Weights> {
-    static SHARED: OnceLock<Arc<Weights>> = OnceLock::new();
-    SHARED
-        .get_or_init(|| {
-            let mut all = BLOB
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|b| f32::from_le_bytes(*b));
-            let mut take = |n: usize| -> Vec<f32> { all.by_ref().take(n).collect() };
-            let stft = take(258 * WINDOW);
-            let conv = [
-                (take(128 * BINS * 3), take(128)),
-                (take(64 * 128 * 3), take(64)),
-                (take(64 * 64 * 3), take(64)),
-                (take(128 * 64 * 3), take(128)),
-            ];
-            let w_ih = take(4 * HIDDEN * HIDDEN);
-            let w_hh = take(4 * HIDDEN * HIDDEN);
-            let b_ih = take(4 * HIDDEN);
-            let bias = take(4 * HIDDEN)
-                .iter()
-                .zip(&b_ih)
-                .map(|(a, b)| a + b)
-                .collect();
-            let head = take(HIDDEN);
-            let head_bias = take(1)[0];
-            assert!(
-                all.next().is_none(),
-                "Silero weight blob has the wrong size"
-            );
-            Arc::new(Weights {
-                stft,
-                conv,
-                w_ih,
-                w_hh,
-                bias,
-                head,
-                head_bias,
-            })
-        })
-        .clone()
+fn weights() -> &'static Weights {
+    static SHARED: OnceLock<Weights> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        let mut all = BLOB
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b));
+        let mut take = |n: usize| -> Vec<f32> { all.by_ref().take(n).collect() };
+        let stft = take(258 * WINDOW);
+        let conv = [
+            (take(128 * BINS * 3), take(128)),
+            (take(64 * 128 * 3), take(64)),
+            (take(64 * 64 * 3), take(64)),
+            (take(128 * 64 * 3), take(128)),
+        ];
+        let w_ih = take(4 * HIDDEN * HIDDEN);
+        let w_hh = take(4 * HIDDEN * HIDDEN);
+        let b_ih = take(4 * HIDDEN);
+        let bias = take(4 * HIDDEN)
+            .iter()
+            .zip(&b_ih)
+            .map(|(a, b)| a + b)
+            .collect();
+        let head = take(HIDDEN);
+        let head_bias = take(1)[0];
+        Weights {
+            stft,
+            conv,
+            w_ih,
+            w_hh,
+            bias,
+            head,
+            head_bias,
+        }
+    })
 }
 
 /// The network over 16 kHz audio: one speech probability per `CHUNK` samples.
 pub struct Silero {
-    w: Arc<Weights>,
+    w: &'static Weights,
     x: [f32; PADDED],
     spec: [f32; BINS * FRAMES], // [bin][frame]
     a: [f32; 128 * FRAMES],
@@ -335,7 +343,7 @@ impl VoiceGate {
     fn decide(&mut self) {
         let peak = self.chunk.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         let probability = if peak < SILENT_PEAK {
-            self.silent += 1;
+            self.silent = self.silent.saturating_add(1);
             if self.silent == SILENT_RESET_CHUNKS {
                 self.vad.reset();
             }
@@ -358,7 +366,7 @@ impl VoiceGate {
         } else if probability >= CLOSE_BELOW {
             self.quiet = 0;
         } else if self.is_open {
-            self.quiet += 1;
+            self.quiet = self.quiet.saturating_add(1);
             if self.quiet >= HOLD_CHUNKS {
                 self.is_open = false;
             }

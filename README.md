@@ -26,6 +26,8 @@ All plugins take 48 kHz mono and accept any host block size. Both DeepFilterNet3
 plugins include a Silero voice gate that mutes the output while nobody speaks.
 It is on by default and raises the latency of both engines to 66 ms, from 40 ms
 for DeepFilterNet3 and 20 ms for DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
+Each LADSPA plugin reports its current delay, in samples, on an output control
+port named `latency`, which PipeWire's filter-chain adds to the node latency.
 
 ## CPU cost
 
@@ -59,20 +61,17 @@ The tests use the models in the repository.
 ## Layout
 
 ```text
-ops/              int8/SIMD kernels and resampler shared by the engines
+ops/              int8/SIMD kernels and resampler shared by all engines
 deepfilternet3/   DeepFilterNet3 and -LL engines, their shared LADSPA plugin crate,
                   CLIs and benchmark, weight quantizer
 silero-vad/       Silero VAD and the voice gate of the DeepFilterNet3 plugins
 limiter-ladspa/   peak limiter
-dpdfnet/          DPDFNet engine, its own kernel crate, model bundle, export tools
+dpdfnet/          DPDFNet engine, model bundle, export tools
 gtcrn-aec/        GTCRN-AEC engine, PipeWire SPA plugin, model, evaluation harness
 pkgbuild/         Arch/BigLinux split package
-testdata/         speech recordings shared by the tests
+testdata/         synthetic speech and the allocation counter shared by the tests
 docs/             design notes per engine and performance method
 ```
-
-`dpdfnet/ops` started as a copy of `ops` and diverged. Merging them needs the
-bit-identity tests of both engines to pass on every SIMD tier.
 
 ## Documentation
 

@@ -2,10 +2,11 @@
 //!
 //! The audio is delayed by a 3 ms lookahead, so the gain can ramp down before a
 //! peak reaches the output instead of clipping it. A final clamp at the ceiling
-//! catches rounding. The plugin adds `LOOKAHEAD_MS` of latency, which LADSPA 1.1
-//! cannot report; the graph owner has to account for it.
+//! catches rounding. The `latency` output control reports the delay in samples,
+//! which PipeWire's filter-chain adds to the node's latency.
 
 use std::collections::VecDeque;
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_ulong, c_void};
 use std::ptr;
 
@@ -124,16 +125,15 @@ fn db_to_lin(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
-// ── LADSPA 1.1 ABI ──────────────────────────────────────────────────────────
+// LADSPA 1.1 ABI.
 
-type Data = f32;
 type Handle = *mut c_void;
 
 #[repr(C)]
 struct PortRangeHint {
     hint_descriptor: i32,
-    lower: Data,
-    upper: Data,
+    lower: f32,
+    upper: f32,
 }
 
 #[repr(C)]
@@ -150,14 +150,15 @@ pub struct Descriptor {
     port_range_hints: *const PortRangeHint,
     implementation_data: *mut c_void,
     instantiate: Option<extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
-    connect_port: Option<extern "C" fn(Handle, c_ulong, *mut Data)>,
+    connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
     activate: Option<extern "C" fn(Handle)>,
     run: Option<extern "C" fn(Handle, c_ulong)>,
     run_adding: Option<extern "C" fn(Handle, c_ulong)>,
-    set_run_adding_gain: Option<extern "C" fn(Handle, Data)>,
+    set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
     deactivate: Option<extern "C" fn(Handle)>,
     cleanup: Option<extern "C" fn(Handle)>,
 }
+// SAFETY: immutable after construction; the pointers are to 'static data.
 unsafe impl Sync for Descriptor {}
 
 const PORT_INPUT: i32 = 0x1;
@@ -168,13 +169,22 @@ const HINT_BOUNDED_BELOW: i32 = 0x1;
 const HINT_BOUNDED_ABOVE: i32 = 0x2;
 const HINT_DEFAULT_HIGH: i32 = 0x100;
 
+// Port indices are public contract: new ports are only appended.
+const IN: c_ulong = 0;
+const OUT: c_ulong = 1;
+const CEILING: c_ulong = 2;
+const RELEASE: c_ulong = 3;
+const LATENCY: c_ulong = 4;
+const PORT_COUNT: usize = 5;
+
 struct Instance {
     lim: Limiter,
     sr: f32,
-    p_in: *const Data,
-    p_out: *mut Data,
-    p_ceiling: *const Data,
-    p_release: *const Data,
+    p_in: *const f32,
+    p_out: *mut f32,
+    p_ceiling: *const f32,
+    p_release: *const f32,
+    p_latency: *mut f32,
     last_ceiling: f32,
     last_release: f32,
 }
@@ -194,40 +204,47 @@ extern "C" fn instantiate(_d: *const Descriptor, sr: c_ulong) -> Handle {
         p_out: ptr::null_mut(),
         p_ceiling: ptr::null(),
         p_release: ptr::null(),
+        p_latency: ptr::null_mut(),
         last_ceiling: ceiling,
         last_release: release,
     });
-    Box::into_raw(inst) as Handle
+    Box::into_raw(inst).cast()
 }
 
-extern "C" fn connect_port(h: Handle, port: c_ulong, data: *mut Data) {
+extern "C" fn connect_port(h: Handle, port: c_ulong, data: *mut f32) {
     if h.is_null() {
         return;
     }
     // SAFETY: `h` is the Instance leaked in instantiate(); valid for its lifetime.
-    let inst = unsafe { &mut *(h as *mut Instance) };
+    let inst = unsafe { &mut *h.cast::<Instance>() };
     match port {
-        0 => inst.p_in = data,
-        1 => inst.p_out = data,
-        2 => inst.p_ceiling = data,
-        3 => inst.p_release = data,
+        IN => inst.p_in = data,
+        OUT => inst.p_out = data,
+        CEILING => inst.p_ceiling = data,
+        RELEASE => inst.p_release = data,
+        LATENCY => inst.p_latency = data,
         _ => {}
     }
 }
 
 extern "C" fn run(h: Handle, n: c_ulong) {
-    if h.is_null() || n == 0 {
+    if h.is_null() {
         return;
     }
     // SAFETY: `h` is a live Instance; the host connected every port to buffers
     // at least `n` long before calling run().
-    let inst = unsafe { &mut *(h as *mut Instance) };
+    let inst = unsafe { &mut *h.cast::<Instance>() };
+    if !inst.p_latency.is_null() {
+        // SAFETY: a connected control port is valid host storage during run().
+        unsafe { *inst.p_latency = inst.lim.look as f32 };
+    }
     let n = n as usize;
-    if inst.p_in.is_null() || inst.p_out.is_null() {
+    if n == 0 || inst.p_in.is_null() || inst.p_out.is_null() {
         return;
     }
     // Control ports move rarely; convert only on change.
     if !inst.p_ceiling.is_null() {
+        // SAFETY: a connected control port is valid host storage during run().
         let db = unsafe { *inst.p_ceiling };
         if db.is_finite() && db != inst.last_ceiling {
             inst.lim
@@ -236,6 +253,7 @@ extern "C" fn run(h: Handle, n: c_ulong) {
         }
     }
     if !inst.p_release.is_null() {
+        // SAFETY: as above.
         let rel = unsafe { *inst.p_release };
         if rel.is_finite() && rel != inst.last_release {
             inst.lim
@@ -244,11 +262,12 @@ extern "C" fn run(h: Handle, n: c_ulong) {
         }
     }
     for i in 0..n {
-        // LADSPA permits the same audio buffer for input and output. Read the
-        // input value before writing, and never create overlapping references.
-        // The host still owns pointer validity and the n-sample extent.
+        // LADSPA permits the same buffer for input and output: read each input
+        // sample before writing its output, through raw pointers only.
+        // SAFETY: both audio ports hold at least `n` samples.
         let x = unsafe { inst.p_in.add(i).read() };
         let y = inst.lim.process_sample(x);
+        // SAFETY: as above.
         unsafe { inst.p_out.add(i).write(y) };
     }
 }
@@ -258,55 +277,49 @@ extern "C" fn activate(h: Handle) {
         return;
     }
     // SAFETY: live handle from instantiate; LADSPA serializes lifecycle calls.
-    unsafe {
-        (&mut *(h as *mut Instance)).lim.reset();
-    }
+    unsafe { (*h.cast::<Instance>()).lim.reset() };
 }
-
-extern "C" fn deactivate(_h: Handle) {}
 
 extern "C" fn cleanup(h: Handle) {
     if !h.is_null() {
         // SAFETY: `h` is the Box leaked in instantiate(); reclaimed exactly once.
-        unsafe { drop(Box::from_raw(h as *mut Instance)) };
+        unsafe { drop(Box::from_raw(h.cast::<Instance>())) };
     }
 }
 
-const LABEL: &[u8] = b"biglinux_lookahead_limiter_mono\0";
-const NAME: &[u8] = b"BigLinux mono lookahead limiter\0";
-const MAKER: &[u8] = b"BigLinux\0";
-const COPYRIGHT: &[u8] = b"Code: MIT OR Apache-2.0\0";
-const PN_IN: &[u8] = b"Audio In\0";
-const PN_OUT: &[u8] = b"Audio Out\0";
-const PN_CEILING: &[u8] = b"Ceiling (dB)\0";
-const PN_RELEASE: &[u8] = b"Release (s)\0";
-
-static PORT_DESCRIPTORS: [i32; 4] = [
+static PORT_DESCRIPTORS: [i32; PORT_COUNT] = [
     PORT_INPUT | PORT_AUDIO,
     PORT_OUTPUT | PORT_AUDIO,
     PORT_INPUT | PORT_CONTROL,
     PORT_INPUT | PORT_CONTROL,
+    PORT_OUTPUT | PORT_CONTROL,
 ];
-struct Names([*const c_char; 4]);
+const NAMES: [&CStr; PORT_COUNT] = [
+    c"Audio In",
+    c"Audio Out",
+    c"Ceiling (dB)",
+    c"Release (s)",
+    c"latency",
+];
+struct Names([*const c_char; PORT_COUNT]);
+// SAFETY: pointers to 'static C string literals.
 unsafe impl Sync for Names {}
 static PORT_NAMES: Names = Names([
-    PN_IN.as_ptr() as *const c_char,
-    PN_OUT.as_ptr() as *const c_char,
-    PN_CEILING.as_ptr() as *const c_char,
-    PN_RELEASE.as_ptr() as *const c_char,
+    NAMES[0].as_ptr(),
+    NAMES[1].as_ptr(),
+    NAMES[2].as_ptr(),
+    NAMES[3].as_ptr(),
+    NAMES[4].as_ptr(),
 ]);
 const CTRL: i32 = HINT_BOUNDED_BELOW | HINT_BOUNDED_ABOVE;
-static PORT_HINTS: [PortRangeHint; 4] = [
-    PortRangeHint {
-        hint_descriptor: 0,
-        lower: 0.0,
-        upper: 0.0,
-    },
-    PortRangeHint {
-        hint_descriptor: 0,
-        lower: 0.0,
-        upper: 0.0,
-    },
+const UNHINTED: PortRangeHint = PortRangeHint {
+    hint_descriptor: 0,
+    lower: 0.0,
+    upper: 0.0,
+};
+static PORT_HINTS: [PortRangeHint; PORT_COUNT] = [
+    UNHINTED,
+    UNHINTED,
     // Defaults: -5 dB ceiling, 1.5 s release.
     PortRangeHint {
         hint_descriptor: CTRL | HINT_DEFAULT_HIGH,
@@ -318,15 +331,16 @@ static PORT_HINTS: [PortRangeHint; 4] = [
         lower: RELEASE_S.0,
         upper: RELEASE_S.1,
     },
+    UNHINTED,
 ];
 static DESCRIPTOR: Descriptor = Descriptor {
     unique_id: 0x00B6_4C31,
-    label: LABEL.as_ptr() as *const c_char,
+    label: c"biglinux_lookahead_limiter_mono".as_ptr(),
     properties: 0,
-    name: NAME.as_ptr() as *const c_char,
-    maker: MAKER.as_ptr() as *const c_char,
-    copyright: COPYRIGHT.as_ptr() as *const c_char,
-    port_count: 4,
+    name: c"BigLinux mono lookahead limiter".as_ptr(),
+    maker: c"BigLinux".as_ptr(),
+    copyright: c"Code: MIT OR Apache-2.0".as_ptr(),
+    port_count: PORT_COUNT as c_ulong,
     port_descriptors: PORT_DESCRIPTORS.as_ptr(),
     port_names: PORT_NAMES.0.as_ptr(),
     port_range_hints: PORT_HINTS.as_ptr(),
@@ -337,18 +351,14 @@ static DESCRIPTOR: Descriptor = Descriptor {
     run: Some(run),
     run_adding: None,
     set_run_adding_gain: None,
-    deactivate: Some(deactivate),
+    deactivate: None,
     cleanup: Some(cleanup),
 };
 
 /// LADSPA host entry point.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ladspa_descriptor(index: c_ulong) -> *const Descriptor {
-    if index == 0 {
-        &DESCRIPTOR
-    } else {
-        ptr::null()
-    }
+    if index == 0 { &DESCRIPTOR } else { ptr::null() }
 }
 
 #[cfg(test)]
@@ -356,14 +366,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lookahead_is_3_ms() {
-        assert_eq!(Limiter::new(48_000.0, -1.0, 0.2).look, 144);
+    fn the_latency_port_reports_the_delay_an_impulse_shows() {
+        for sr in [44_100, 48_000, 96_000] {
+            let mut audio = vec![0.0f32; 1024];
+            audio[10] = 0.5;
+            let mut latency = -1.0f32;
+            let h = instantiate(&DESCRIPTOR, sr);
+            connect_port(h, IN, audio.as_mut_ptr());
+            connect_port(h, OUT, audio.as_mut_ptr());
+            connect_port(h, LATENCY, &mut latency);
+            run(h, audio.len() as c_ulong);
+            cleanup(h);
+            let arrival = audio.iter().position(|&v| v != 0.0).unwrap();
+            assert_eq!(arrival - 10, latency as usize, "{sr} Hz");
+            // 3 ms at the host rate.
+            assert_eq!(latency, (sr as f32 * 0.003).round(), "{sr} Hz");
+        }
     }
 
     #[test]
     fn hint_defaults_are_the_instantiate_defaults() {
-        assert_eq!(default_high(CEILING_DB), -5.0);
-        assert_eq!(default_high(RELEASE_S), 1.5025);
+        // A host that applies the hints and one that leaves the controls
+        // unconnected must run the same settings.
+        let h = instantiate(&DESCRIPTOR, 48_000);
+        // SAFETY: `h` is the Instance instantiate() just leaked.
+        let inst = unsafe { &*h.cast::<Instance>() };
+        for (port, value) in [(CEILING, inst.last_ceiling), (RELEASE, inst.last_release)] {
+            let hint = &PORT_HINTS[port as usize];
+            // LADSPA_HINT_DEFAULT_MASK.
+            assert_eq!(hint.hint_descriptor & 0x3C0, HINT_DEFAULT_HIGH);
+            assert_eq!(value, 0.25 * hint.lower + 0.75 * hint.upper, "port {port}");
+        }
+        cleanup(h);
     }
 
     #[test]
@@ -460,8 +494,8 @@ mod tests {
         let mut actual = input;
         let handle = instantiate(&DESCRIPTOR, 48_000);
         assert!(!handle.is_null());
-        connect_port(handle, 0, actual.as_mut_ptr());
-        connect_port(handle, 1, actual.as_mut_ptr());
+        connect_port(handle, IN, actual.as_mut_ptr());
+        connect_port(handle, OUT, actual.as_mut_ptr());
         run(handle, actual.len() as c_ulong);
         cleanup(handle);
         assert_eq!(actual, expected);

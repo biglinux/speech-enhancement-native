@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0
- * Diagnostic/embedding ABI; preprocessing and model execution live entirely in Rust.
- * A handle must never be used concurrently. Buffers are caller-owned and f32.
+ * C API for embedding and reference comparison.
+ * A handle must not be used from two threads at once. Buffers are caller-owned and f32.
  */
 #ifndef DPDFNET_NATIVE_H
 #define DPDFNET_NATIVE_H
@@ -13,14 +13,16 @@ void *dpdfnet_native_create(const char *model_directory_utf8); /* NULL on load e
 void dpdfnet_native_destroy(void *handle);
 void dpdfnet_native_reset(void *handle);
 /* Returns 0 on success, -1 for null argument, -2 for latched processing fault.
- * Input/output each cover samples floats; disjoint OR exact same address.
+ * Input/output each cover samples floats; disjoint or the same address.
  * No partial overlap. 0 dB = aligned dry; 100 dB = fully enhanced.
- * Internal state is always processed; changing this control never skips inference.
  */
 int32_t dpdfnet_native_process(void *handle, const float *input, float *output,
                               size_t samples, float attenuation_db);
 /* 481 complex bins as [real,imag] => 962 floats. Unnormalized real-FFT convention.
  * Do not mix this diagnostic interface with PCM processing without reset().
+ * Returns 0 on success, -1 for null argument, -2 when the result is not finite.
+ * An internal failure also returns -2, zeroes the output and latches the fault
+ * that dpdfnet_native_process reports until reset().
  */
 int32_t dpdfnet_native_spectrum(void *handle, const float *input, float *output);
 /* Intermediate values of the last processed frame, for reference comparison.

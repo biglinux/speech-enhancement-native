@@ -15,12 +15,12 @@ pub(crate) struct SilenceExpander {
     gain: f32,
     /// Hops of "protect as speech" remaining after the last clearly-speech hop.
     /// Guards word tails and short gaps from being ducked as noise.
-    hold: i32,
+    hold: u32,
     /// Consecutive ducked hops since the protective hold expired. Drives the
     /// progressive deepening that mutes long silences fully.
-    silent: i32,
+    silent: u32,
     /// Consecutive speech hops, for `OPEN_CONFIRM`.
-    speech_run: i32,
+    speech_run: u32,
 }
 
 impl SilenceExpander {
@@ -33,7 +33,16 @@ impl SilenceExpander {
     const OPEN_MARGIN_DB: f32 = 3.0;
     /// Hops after the last speech hop that still pass at unity (300 ms), so word
     /// tails and short gaps are not ducked.
-    const HOLD_HOPS: i32 = 30;
+    const HOLD_HOPS: u32 = 30;
+    /// Consecutive speech hops that reopen a deepened silence. A mouse click
+    /// flags a single hop; onsets after short gaps still open on the first.
+    const OPEN_CONFIRM: u32 = 2;
+    /// Ducked hops (0.5 s, after the hold) before the duck deepens toward a full
+    /// mute, so gaps between words keep the finite duck.
+    const DEEP_START_HOPS: u32 = 50;
+    /// Hops (1 s) over which the duck ramps to a full mute, removing the residual
+    /// the finite depth leaves.
+    const DEEP_RAMP_HOPS: f32 = 100.0;
 
     pub(crate) fn new() -> Self {
         Self {
@@ -43,17 +52,6 @@ impl SilenceExpander {
             speech_run: 0,
         }
     }
-
-    /// Consecutive speech hops that reopen a deepened silence. A mouse click
-    /// flags a single hop; onsets after short gaps still open on the first.
-    const OPEN_CONFIRM: i32 = 2;
-
-    /// Ducked hops (0.5 s, after the hold) before the duck deepens toward a full
-    /// mute, so gaps between words keep the finite duck.
-    const DEEP_START_HOPS: i32 = 50;
-    /// Hops (1 s) over which the duck ramps to a full mute, removing the residual
-    /// the finite depth leaves.
-    const DEEP_RAMP_HOPS: f32 = 100.0;
 
     /// Ducks one processed hop by up to `depth_db` unless the model's `lsnr` is
     /// clearly above its `gate_db` threshold. Non-finite `depth_db` is a pass-through.
@@ -72,7 +70,11 @@ impl SilenceExpander {
             return;
         }
         let flagged = lsnr.is_finite() && lsnr >= gate_db + Self::OPEN_MARGIN_DB;
-        self.speech_run = if flagged { self.speech_run + 1 } else { 0 };
+        self.speech_run = if flagged {
+            self.speech_run.saturating_add(1)
+        } else {
+            0
+        };
         let deep = self.silent > Self::DEEP_START_HOPS;
         let open = flagged && floor_open && (!deep || self.speech_run >= Self::OPEN_CONFIRM);
         if open {
@@ -84,14 +86,10 @@ impl SilenceExpander {
             self.silent = 0;
             1.0
         } else {
-            self.silent += 1;
+            self.silent = self.silent.saturating_add(1);
             let duck = 10f32.powf(-depth_db / 20.0);
-            let over = (self.silent - Self::DEEP_START_HOPS) as f32;
-            if over > 0.0 {
-                duck * (1.0 - (over / Self::DEEP_RAMP_HOPS).min(1.0))
-            } else {
-                duck
-            }
+            let over = self.silent.saturating_sub(Self::DEEP_START_HOPS) as f32;
+            duck * (1.0 - (over / Self::DEEP_RAMP_HOPS).min(1.0))
         };
         for s in buf {
             let coeff = if target > self.gain {
@@ -110,8 +108,8 @@ mod tests {
     use super::SilenceExpander;
 
     const HOP: usize = 480;
-    // A gate threshold and two LSNR values that straddle it: clearly speech and
-    // clearly noise (the model reports its local SNR relative to `GATE`).
+    // A gate threshold and two LSNR values (dB) that straddle it: clearly speech
+    // and clearly noise.
     const GATE: f32 = -18.0;
     const SPEECH_LSNR: f32 = 0.0; // well above GATE + OPEN_MARGIN
     const NOISE_LSNR: f32 = -30.0; // below GATE
@@ -263,26 +261,5 @@ mod tests {
             ratio > 0.95,
             "word after a brief gap was chopped: {ratio:.3}"
         );
-    }
-
-    #[test]
-    fn deterministic() {
-        let run = || {
-            let mut ex = SilenceExpander::new();
-            let mut ph = 0.0;
-            let mut out = Vec::new();
-            for hop in 0..30 {
-                let (amp, lsnr) = if hop % 2 == 0 {
-                    (0.3, SPEECH_LSNR)
-                } else {
-                    (5e-4, NOISE_LSNR)
-                };
-                let mut buf = tone(amp, &mut ph);
-                ex.process_hop(&mut buf, 24.0, lsnr, GATE, true);
-                out.extend_from_slice(&buf);
-            }
-            out
-        };
-        assert_eq!(run(), run());
     }
 }

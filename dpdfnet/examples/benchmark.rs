@@ -2,43 +2,10 @@
 //! fails on any heap use while processing.
 //! cargo run --profile release-unwind -p dpdfnet-native --example benchmark -- MODEL_DIRECTORY
 use dpdfnet_native::{AudioProcessor, Bundle, HOP};
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::Instant,
-};
-struct AuditAlloc;
-static ARMED: AtomicBool = AtomicBool::new(false);
-static ALLOCS: AtomicU64 = AtomicU64::new(0);
-static FREES: AtomicU64 = AtomicU64::new(0);
-unsafe impl GlobalAlloc for AuditAlloc {
-    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.alloc(l) }
-    }
-    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.alloc_zeroed(l) }
-    }
-    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        if ARMED.load(Ordering::Relaxed) {
-            FREES.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.dealloc(p, l) }
-    }
-    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
-        unsafe { System.realloc(p, l, n) }
-    }
-}
-#[global_allocator]
-static ALLOC: AuditAlloc = AuditAlloc;
+use std::{process::ExitCode, time::Instant};
+#[path = "../../testdata/heap_calls.rs"]
+mod heap_calls;
+use heap_calls::heap_calls;
 fn go() -> Result<(), String> {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 2 || a.len() > 3 {
@@ -69,25 +36,23 @@ fn go() -> Result<(), String> {
         p.process(&samples[..HOP], &mut out);
     }
     p.reset();
-    let _denormals = dfn_ops::DenormalGuard::new();
-    ARMED.store(true, Ordering::SeqCst);
-    let all = Instant::now();
+    let mut elapsed = 0.0;
     let mut checksum = 0.0f64;
-    for (n, chunk) in samples.as_chunks::<HOP>().0.iter().enumerate() {
-        let start = Instant::now();
-        p.process(chunk, &mut out);
-        times[n] = start.elapsed().as_secs_f64() * 1e6;
-        checksum += out[HOP / 2] as f64;
-    }
-    let elapsed = all.elapsed().as_secs_f64();
-    ARMED.store(false, Ordering::SeqCst);
-    let allocations = ALLOCS.load(Ordering::Relaxed);
-    let frees = FREES.load(Ordering::Relaxed);
+    let heap = heap_calls(|| {
+        let all = Instant::now();
+        for (n, chunk) in samples.as_chunks::<HOP>().0.iter().enumerate() {
+            let start = Instant::now();
+            p.process(chunk, &mut out);
+            times[n] = start.elapsed().as_secs_f64() * 1e6;
+            checksum += out[HOP / 2] as f64;
+        }
+        elapsed = all.elapsed().as_secs_f64();
+    });
     times.sort_by(f64::total_cmp);
     let report = serde_json::json!({"audio_seconds":secs,"wall_seconds":elapsed,"rtf":elapsed/secs as f64,
         "hop_us_median":times[hops/2],"hop_us_p95":times[(hops*95/100).min(hops-1)],
         "hop_us_p99":times[(hops*99/100).min(hops-1)],"hop_us_max":times[hops-1],
-        "hot_allocations":allocations,"hot_deallocations":frees,
+        "hot_heap_calls":heap,
         "fault":p.faulted(),"checksum":checksum,"weight_bytes":bundle.weight_bytes(),
         "diagnostics":{"force_avx1":cfg!(feature = "force-avx1"),"force_sse41":cfg!(feature = "force-sse41")},
         "note":"Wall-clock measurement in this process; obtain CPU time and RSS separately with /usr/bin/time -v."});
@@ -95,14 +60,17 @@ fn go() -> Result<(), String> {
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
     );
-    if allocations != 0 || frees != 0 || p.faulted() {
+    if heap != 0 || p.faulted() {
         return Err("RT acceptance checks failed".into());
     }
     Ok(())
 }
-fn main() {
-    if let Err(e) = go() {
-        eprintln!("{e}");
-        std::process::exit(1);
+fn main() -> ExitCode {
+    match go() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("benchmark: {e}");
+            ExitCode::FAILURE
+        }
     }
 }

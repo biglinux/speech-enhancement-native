@@ -63,10 +63,10 @@ int main(int argc, char **argv) {
     struct spa_audio_info_raw bad = SPA_AUDIO_INFO_RAW_INIT(
         .format = SPA_AUDIO_FORMAT_F32P, .rate = 44100, .channels = 1);
     CHECK(spa_audio_aec_init(aec, NULL, &bad) == -EINVAL);
-    bad.rate = 48000; bad.channels = 2;
     struct spa_audio_info_raw good = SPA_AUDIO_INFO_RAW_INIT(
         .format = SPA_AUDIO_FORMAT_F32P, .rate = 48000, .channels = 1);
-    /* Each init2 argument must be checked, not only the first one. */
+    /* Each init2 argument must be checked, not only the first one. A stereo
+     * stream is not an error there: init2 rewrites it to mono. */
     CHECK(spa_audio_aec_init2(aec, NULL, &bad, &good, &good) == -EINVAL);
     CHECK(spa_audio_aec_init2(aec, NULL, &good, &bad, &good) == -EINVAL);
     CHECK(spa_audio_aec_init2(aec, NULL, &good, &good, &bad) == -EINVAL);

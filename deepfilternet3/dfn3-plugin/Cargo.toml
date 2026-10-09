@@ -1,13 +1,16 @@
 [package]
 name = "dfn3-plugin"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "The signal path, LADSPA wrapper and voice gate shared by the DeepFilterNet3 and DeepFilterNet3-LL plugins"
-publish = false
+publish.workspace = true
 
 [dependencies]
 realfft = "3"
-dfn-ops = { path = "../../ops" }
+ops = { path = "../../ops" }
 silero-vad = { path = "../../silero-vad" }
 
+[lints]
+workspace = true

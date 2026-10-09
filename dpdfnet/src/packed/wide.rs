@@ -4,6 +4,8 @@
 //! kernels; each vector lane is a complete output within the INT32 bound.
 use std::arch::x86_64::*;
 
+/// # Safety
+/// The CPU must support AVX2, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn avx2_one(
     out: &mut [f32],
@@ -14,142 +16,151 @@ pub(super) unsafe fn avx2_one(
     rows: usize,
     cols: usize,
 ) {
-    let mut r = 0usize;
-    while r + 64 <= rows {
-        let mut a0 = _mm256_setzero_si256();
-        let mut a1 = _mm256_setzero_si256();
-        let mut a2 = _mm256_setzero_si256();
-        let mut a3 = _mm256_setzero_si256();
-        let mut a4 = _mm256_setzero_si256();
-        let mut a5 = _mm256_setzero_si256();
-        let mut a6 = _mm256_setzero_si256();
-        let mut a7 = _mm256_setzero_si256();
-        for j in (0..cols).step_by(2) {
-            let xx = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
-            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
-            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(w0, xx));
-            let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 8) * cols + j * 8).cast(),
-            ));
-            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(w1, xx));
-            let w2 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 16) * cols + j * 8).cast(),
-            ));
-            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(w2, xx));
-            let w3 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 24) * cols + j * 8).cast(),
-            ));
-            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(w3, xx));
-            let w4 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 32) * cols + j * 8).cast(),
-            ));
-            a4 = _mm256_add_epi32(a4, _mm256_madd_epi16(w4, xx));
-            let w5 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 40) * cols + j * 8).cast(),
-            ));
-            a5 = _mm256_add_epi32(a5, _mm256_madd_epi16(w5, xx));
-            let w6 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 48) * cols + j * 8).cast(),
-            ));
-            a6 = _mm256_add_epi32(a6, _mm256_madd_epi16(w6, xx));
-            let w7 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 56) * cols + j * 8).cast(),
-            ));
-            a7 = _mm256_add_epi32(a7, _mm256_madd_epi16(w7, xx));
+    // SAFETY: each 64-row tile reads `w[r * cols..]` for `64 * cols` bytes, `q` in
+    // pairs below `cols` and `sw[r..r + 64]`, and writes `out[r..r + 64]`; the
+    // remaining rows go to `avx2::<1>` with the same contract on the subslices.
+    unsafe {
+        let mut r = 0usize;
+        while r + 64 <= rows {
+            let mut a0 = _mm256_setzero_si256();
+            let mut a1 = _mm256_setzero_si256();
+            let mut a2 = _mm256_setzero_si256();
+            let mut a3 = _mm256_setzero_si256();
+            let mut a4 = _mm256_setzero_si256();
+            let mut a5 = _mm256_setzero_si256();
+            let mut a6 = _mm256_setzero_si256();
+            let mut a7 = _mm256_setzero_si256();
+            for j in (0..cols).step_by(2) {
+                let xx =
+                    _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
+                let w0 =
+                    _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
+                a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(w0, xx));
+                let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 8) * cols + j * 8).cast(),
+                ));
+                a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(w1, xx));
+                let w2 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 16) * cols + j * 8).cast(),
+                ));
+                a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(w2, xx));
+                let w3 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 24) * cols + j * 8).cast(),
+                ));
+                a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(w3, xx));
+                let w4 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 32) * cols + j * 8).cast(),
+                ));
+                a4 = _mm256_add_epi32(a4, _mm256_madd_epi16(w4, xx));
+                let w5 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 40) * cols + j * 8).cast(),
+                ));
+                a5 = _mm256_add_epi32(a5, _mm256_madd_epi16(w5, xx));
+                let w6 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 48) * cols + j * 8).cast(),
+                ));
+                a6 = _mm256_add_epi32(a6, _mm256_madd_epi16(w6, xx));
+                let w7 = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 56) * cols + j * 8).cast(),
+                ));
+                a7 = _mm256_add_epi32(a7, _mm256_madd_epi16(w7, xx));
+            }
+            let xs = _mm256_set1_ps(sx[0]);
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(_mm256_cvtepi32_ps(a0), _mm256_loadu_ps(sw.as_ptr().add(r))),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 8),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a1),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 8)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 16),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a2),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 16)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 24),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a3),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 24)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 32),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a4),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 32)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 40),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a5),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 40)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 48),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a6),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 48)),
+                    ),
+                    xs,
+                ),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 56),
+                _mm256_mul_ps(
+                    _mm256_mul_ps(
+                        _mm256_cvtepi32_ps(a7),
+                        _mm256_loadu_ps(sw.as_ptr().add(r + 56)),
+                    ),
+                    xs,
+                ),
+            );
+            r += 64;
         }
-        let xs = _mm256_set1_ps(sx[0]);
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r),
-            _mm256_mul_ps(
-                _mm256_mul_ps(_mm256_cvtepi32_ps(a0), _mm256_loadu_ps(sw.as_ptr().add(r))),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 8),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a1),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 8)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 16),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a2),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 16)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 24),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a3),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 24)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 32),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a4),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 32)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 40),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a5),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 40)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 48),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a6),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 48)),
-                ),
-                xs,
-            ),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 56),
-            _mm256_mul_ps(
-                _mm256_mul_ps(
-                    _mm256_cvtepi32_ps(a7),
-                    _mm256_loadu_ps(sw.as_ptr().add(r + 56)),
-                ),
-                xs,
-            ),
-        );
-        r += 64;
-    }
-    if r < rows {
-        super::avx2::<1>(
-            &mut out[r..],
-            &w[r * cols..],
-            &sw[r..],
-            q,
-            sx,
-            rows - r,
-            cols,
-        );
+        if r < rows {
+            super::avx2::<1>(
+                &mut out[r..],
+                &w[r * cols..],
+                &sw[r..],
+                q,
+                sx,
+                rows - r,
+                cols,
+            );
+        }
     }
 }
 
+/// # Safety
+/// The CPU must support AVX2, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn avx2_four(
     out: &mut [f32],
@@ -160,100 +171,108 @@ pub(super) unsafe fn avx2_four(
     rows: usize,
     cols: usize,
 ) {
-    let mut r = 0usize;
-    while r + 16 <= rows {
-        let mut a0 = _mm256_setzero_si256();
-        let mut b0 = _mm256_setzero_si256();
-        let mut a1 = _mm256_setzero_si256();
-        let mut b1 = _mm256_setzero_si256();
-        let mut a2 = _mm256_setzero_si256();
-        let mut b2 = _mm256_setzero_si256();
-        let mut a3 = _mm256_setzero_si256();
-        let mut b3 = _mm256_setzero_si256();
-        for j in (0..cols).step_by(2) {
-            let wa = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
-            let wb = _mm256_cvtepi8_epi16(_mm_loadu_si128(
-                w.as_ptr().add((r + 8) * cols + j * 8).cast(),
-            ));
-            let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
-            a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(wa, x0));
-            b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(wb, x0));
-            let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(cols + j).cast::<i32>(),
-            ));
-            a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(wa, x1));
-            b1 = _mm256_add_epi32(b1, _mm256_madd_epi16(wb, x1));
-            let x2 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(2 * cols + j).cast::<i32>(),
-            ));
-            a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(wa, x2));
-            b2 = _mm256_add_epi32(b2, _mm256_madd_epi16(wb, x2));
-            let x3 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                q.as_ptr().add(3 * cols + j).cast::<i32>(),
-            ));
-            a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(wa, x3));
-            b3 = _mm256_add_epi32(b3, _mm256_madd_epi16(wb, x3));
-        }
-        let sa = _mm256_loadu_ps(sw.as_ptr().add(r));
-        let sb = _mm256_loadu_ps(sw.as_ptr().add(r + 8));
-        let sx0 = _mm256_set1_ps(sx[0]);
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a0), sa), sx0),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(r + 8),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b0), sb), sx0),
-        );
-        let sx1 = _mm256_set1_ps(sx[1]);
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(rows + r),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a1), sa), sx1),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(rows + r + 8),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b1), sb), sx1),
-        );
-        let sx2 = _mm256_set1_ps(sx[2]);
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(2 * rows + r),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a2), sa), sx2),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(2 * rows + r + 8),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b2), sb), sx2),
-        );
-        let sx3 = _mm256_set1_ps(sx[3]);
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(3 * rows + r),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a3), sa), sx3),
-        );
-        _mm256_storeu_ps(
-            out.as_mut_ptr().add(3 * rows + r + 8),
-            _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b3), sb), sx3),
-        );
-        r += 16;
-    }
-    if r < rows {
-        let mut a = [_mm256_setzero_si256(); 4];
-        for j in (0..cols).step_by(2) {
-            let ww = _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
-            for (k, acc) in a.iter_mut().enumerate() {
-                let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
-                    q.as_ptr().add(k * cols + j).cast::<i32>(),
+    // SAFETY: each 16-row tile reads `w[r * cols..]` for `16 * cols` bytes, the
+    // four vectors of `q` in pairs below `cols` and `sw[r..r + 16]`, and writes
+    // rows `r..r + 16` of each output vector, all below the `Run` lengths.
+    unsafe {
+        let mut r = 0usize;
+        while r + 16 <= rows {
+            let mut a0 = _mm256_setzero_si256();
+            let mut b0 = _mm256_setzero_si256();
+            let mut a1 = _mm256_setzero_si256();
+            let mut b1 = _mm256_setzero_si256();
+            let mut a2 = _mm256_setzero_si256();
+            let mut b2 = _mm256_setzero_si256();
+            let mut a3 = _mm256_setzero_si256();
+            let mut b3 = _mm256_setzero_si256();
+            for j in (0..cols).step_by(2) {
+                let wa =
+                    _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
+                let wb = _mm256_cvtepi8_epi16(_mm_loadu_si128(
+                    w.as_ptr().add((r + 8) * cols + j * 8).cast(),
                 ));
-                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(ww, xx));
+                let x0 =
+                    _mm256_set1_epi32(std::ptr::read_unaligned(q.as_ptr().add(j).cast::<i32>()));
+                a0 = _mm256_add_epi32(a0, _mm256_madd_epi16(wa, x0));
+                b0 = _mm256_add_epi32(b0, _mm256_madd_epi16(wb, x0));
+                let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(
+                    q.as_ptr().add(cols + j).cast::<i32>(),
+                ));
+                a1 = _mm256_add_epi32(a1, _mm256_madd_epi16(wa, x1));
+                b1 = _mm256_add_epi32(b1, _mm256_madd_epi16(wb, x1));
+                let x2 = _mm256_set1_epi32(std::ptr::read_unaligned(
+                    q.as_ptr().add(2 * cols + j).cast::<i32>(),
+                ));
+                a2 = _mm256_add_epi32(a2, _mm256_madd_epi16(wa, x2));
+                b2 = _mm256_add_epi32(b2, _mm256_madd_epi16(wb, x2));
+                let x3 = _mm256_set1_epi32(std::ptr::read_unaligned(
+                    q.as_ptr().add(3 * cols + j).cast::<i32>(),
+                ));
+                a3 = _mm256_add_epi32(a3, _mm256_madd_epi16(wa, x3));
+                b3 = _mm256_add_epi32(b3, _mm256_madd_epi16(wb, x3));
             }
-        }
-        let ss = _mm256_loadu_ps(sw.as_ptr().add(r));
-        for k in 0..4 {
+            let sa = _mm256_loadu_ps(sw.as_ptr().add(r));
+            let sb = _mm256_loadu_ps(sw.as_ptr().add(r + 8));
+            let sx0 = _mm256_set1_ps(sx[0]);
             _mm256_storeu_ps(
-                out.as_mut_ptr().add(k * rows + r),
-                _mm256_mul_ps(
-                    _mm256_mul_ps(_mm256_cvtepi32_ps(a[k]), ss),
-                    _mm256_set1_ps(sx[k]),
-                ),
+                out.as_mut_ptr().add(r),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a0), sa), sx0),
             );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(r + 8),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b0), sb), sx0),
+            );
+            let sx1 = _mm256_set1_ps(sx[1]);
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(rows + r),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a1), sa), sx1),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(rows + r + 8),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b1), sb), sx1),
+            );
+            let sx2 = _mm256_set1_ps(sx[2]);
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(2 * rows + r),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a2), sa), sx2),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(2 * rows + r + 8),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b2), sb), sx2),
+            );
+            let sx3 = _mm256_set1_ps(sx[3]);
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(3 * rows + r),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(a3), sa), sx3),
+            );
+            _mm256_storeu_ps(
+                out.as_mut_ptr().add(3 * rows + r + 8),
+                _mm256_mul_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(b3), sb), sx3),
+            );
+            r += 16;
+        }
+        if r < rows {
+            let mut a = [_mm256_setzero_si256(); 4];
+            for j in (0..cols).step_by(2) {
+                let ww =
+                    _mm256_cvtepi8_epi16(_mm_loadu_si128(w.as_ptr().add(r * cols + j * 8).cast()));
+                for (k, acc) in a.iter_mut().enumerate() {
+                    let xx = _mm256_set1_epi32(std::ptr::read_unaligned(
+                        q.as_ptr().add(k * cols + j).cast::<i32>(),
+                    ));
+                    *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(ww, xx));
+                }
+            }
+            let ss = _mm256_loadu_ps(sw.as_ptr().add(r));
+            for k in 0..4 {
+                _mm256_storeu_ps(
+                    out.as_mut_ptr().add(k * rows + r),
+                    _mm256_mul_ps(
+                        _mm256_mul_ps(_mm256_cvtepi32_ps(a[k]), ss),
+                        _mm256_set1_ps(sx[k]),
+                    ),
+                );
+            }
         }
     }
 }
@@ -338,6 +357,8 @@ macro_rules! broadcast_four {
     }};
 }
 
+/// # Safety
+/// The CPU must support SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "sse4.1")]
 pub(super) unsafe fn sse_broadcast_four(
     out: &mut [f32],
@@ -348,13 +369,20 @@ pub(super) unsafe fn sse_broadcast_four(
     rows: usize,
     cols: usize,
 ) {
-    if cols == 64 {
-        broadcast_four!(out, w, sw, q, sx, rows);
-    } else {
-        super::xmm::sse_four(out, w, sw, q, sx, rows, cols);
+    // SAFETY: the 64-column schedule reads the packed rows and the four input
+    // vectors of exactly that width; other widths go to the general four-vector
+    // kernel, whose features this function also enables.
+    unsafe {
+        if cols == 64 {
+            broadcast_four!(out, w, sw, q, sx, rows);
+        } else {
+            super::xmm::sse_four(out, w, sw, q, sx, rows, cols);
+        }
     }
 }
 
+/// # Safety
+/// The CPU must support AVX and SSE4.1, and the arguments must satisfy the [`Run`](super::Run) contract.
 #[target_feature(enable = "avx,sse4.1")]
 pub(super) unsafe fn vex_broadcast_four(
     out: &mut [f32],
@@ -365,9 +393,14 @@ pub(super) unsafe fn vex_broadcast_four(
     rows: usize,
     cols: usize,
 ) {
-    if cols == 64 {
-        broadcast_four!(out, w, sw, q, sx, rows);
-    } else {
-        super::xmm::vex_four(out, w, sw, q, sx, rows, cols);
+    // SAFETY: the 64-column schedule reads the packed rows and the four input
+    // vectors of exactly that width; other widths go to the general four-vector
+    // kernel, whose features this function also enables.
+    unsafe {
+        if cols == 64 {
+            broadcast_four!(out, w, sw, q, sx, rows);
+        } else {
+            super::xmm::vex_four(out, w, sw, q, sx, rows, cols);
+        }
     }
 }

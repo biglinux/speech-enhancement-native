@@ -18,11 +18,7 @@ const MANIFEST_LIMIT: usize = 4 * 1024 * 1024;
 const WEIGHTS_LIMIT: usize = 64 * 1024 * 1024;
 
 pub fn require(ok: bool, why: &str) -> Result<()> {
-    if ok {
-        Ok(())
-    } else {
-        Err(why.to_owned())
-    }
+    if ok { Ok(()) } else { Err(why.to_owned()) }
 }
 pub fn num(v: &Value, key: &str) -> Result<usize> {
     v.get(key)
@@ -91,10 +87,11 @@ pub type I16s = Tensor<i16>;
 impl<T> Tensor<T> {
     fn view(blob: Arc<AlignedBlob>, offset: usize, len: usize) -> Self {
         assert_eq!(offset % std::mem::align_of::<T>(), 0);
-        assert!(len
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|n| offset.checked_add(n))
-            .is_some_and(|end| end <= blob.bytes));
+        assert!(
+            len.checked_mul(std::mem::size_of::<T>())
+                .and_then(|n| offset.checked_add(n))
+                .is_some_and(|end| end <= blob.bytes)
+        );
         Self {
             blob,
             offset,
@@ -160,7 +157,7 @@ impl Bundle {
         let b = read_bounded(&dir.join("weights.bin"), WEIGHTS_LIMIT)?;
         Self::from_bytes(&m, &b)
     }
-    pub fn from_bytes(manifest: &[u8], bytes: &[u8]) -> Result<Arc<Self>> {
+    pub(crate) fn from_bytes(manifest: &[u8], bytes: &[u8]) -> Result<Arc<Self>> {
         require(
             cfg!(target_endian = "little"),
             "big-endian targets are not supported",
@@ -176,7 +173,7 @@ impl Bundle {
                 return Err(
                     "schema-1 bundle with row-major matrices: pack it with tools/pack_matrices.py"
                         .into(),
-                )
+                );
             }
             _ => return Err("unsupported manifest schema".into()),
         }
@@ -235,14 +232,14 @@ impl Bundle {
         )?;
         Ok((offset, len))
     }
-    pub fn f32s(&self, v: &Value, expected: usize) -> Result<F32s> {
+    pub(crate) fn f32s(&self, v: &Value, expected: usize) -> Result<F32s> {
         let (offset, len) = self.range(v, "f32", 4)?;
         require(len == expected, "f32 tensor shape mismatch")?;
         let a = F32s::view(self.blob.clone(), offset, len);
         require(a.iter().all(|v| v.is_finite()), "non-finite model weights")?;
         Ok(a)
     }
-    pub fn i8s(&self, v: &Value, expected: usize) -> Result<I8s> {
+    pub(crate) fn i8s(&self, v: &Value, expected: usize) -> Result<I8s> {
         let (offset, len) = self.range(v, "i8", 1)?;
         require(len == expected, "i8 tensor shape mismatch")?;
         let a = I8s::view(self.blob.clone(), offset, len);
@@ -277,28 +274,31 @@ mod tests {
     #[test]
     fn rejects_non_finite_tensor() {
         let b = bundle(&f32::NAN.to_le_bytes());
-        assert!(b
-            .f32s(&serde_json::json!({"dtype":"f32","offset":0,"len":1}), 1)
-            .is_err());
+        assert!(
+            b.f32s(&serde_json::json!({"dtype":"f32","offset":0,"len":1}), 1)
+                .is_err()
+        );
     }
     #[test]
     fn rejects_misalignment_and_out_of_range() {
         let b = bundle(&[0u8; 8]);
         for offset in [1, 8, usize::MAX - 1] {
-            assert!(b
-                .f32s(
+            assert!(
+                b.f32s(
                     &serde_json::json!({"dtype":"f32","offset":offset,"len":1}),
                     1
                 )
-                .is_err());
+                .is_err()
+            );
         }
     }
     #[test]
     fn rejects_asymmetric_int8_minimum() {
         let b = bundle(&[128]);
-        assert!(b
-            .i8s(&serde_json::json!({"dtype":"i8","offset":0,"len":1}), 1)
-            .is_err());
+        assert!(
+            b.i8s(&serde_json::json!({"dtype":"i8","offset":0,"len":1}), 1)
+                .is_err()
+        );
     }
     #[test]
     fn rejects_schema_1_with_a_repacking_hint() {

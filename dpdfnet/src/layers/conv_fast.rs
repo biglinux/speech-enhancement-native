@@ -2,16 +2,22 @@
 //! weights are validated by Conv::load/Pipeline::load. Each kernel keeps the
 //! generic path's per-output reduction order and FMA policy: wide first
 //! convolutions use FMA only on tier 3; op=5 and depthwise never do.
+//!
+//! The `unsafe` kernels share one contract, which the `*_checked` wrappers uphold:
+//! `select` matched `c` to the kernel's shape, so `c.w` and `c.b` have the lengths
+//! `Conv::load` validated for it; `x` holds `c.kt` frames of `x.f * c.ci` values;
+//! and `out` covers `(of - 1) * spacing + offset + c.co` values when `of > 0`.
+//! Input positions in the padding are skipped, never read.
 #[cfg(target_arch = "x86_64")]
 use super::conv_affine::affine;
 use super::{Conv, View};
 pub(super) type Kernel = fn(&Conv, View<'_>, &mut [f32], usize, usize, usize);
 
 pub(super) fn select(c: &Conv) -> Option<Kernel> {
-    // Keep the already register-blocked dense 1x1 and depthwise 1x3 paths intact.
+    // Dense 1x1 and depthwise 1x3 convolutions have their own kernels in ops.
     #[cfg(target_arch = "x86_64")]
     {
-        let tier = dpdfnet_ops::simd_tier();
+        let tier = ops::simd_tier();
         if c.kt == 3 && c.kf == 3 && c.ci == c.groups && c.co == 64 && matches!(c.ci, 1 | 2) {
             return match tier {
                 3 => Some(first_fma_checked),
@@ -76,7 +82,7 @@ fn mask_head(c: &Conv, x: View<'_>, out: &mut [f32], of: usize, spacing: usize, 
             }
             let start = (xi - c.pad) * c.ci;
             // The generic path's dot, for its reduction tree.
-            sum += dpdfnet_ops::vdot_f32(&c.w[k * c.ci..(k + 1) * c.ci], &row[start..start + c.ci]);
+            sum += ops::vdot_f32(&c.w[k * c.ci..(k + 1) * c.ci], &row[start..start + c.ci]);
         }
         out[f * spacing + offset] = c.act.scalar(sum);
     }
@@ -131,6 +137,8 @@ macro_rules! first_body {
         activate(c, out, of, spacing, offset);
     }};
 }
+/// # Safety
+/// The CPU must support AVX2 and FMA, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn first_fma(
@@ -141,8 +149,13 @@ unsafe fn first_fma(
     spacing: usize,
     offset: usize,
 ) {
-    first_body!(c, x, out, of, spacing, offset, true)
+    // SAFETY: the shape gives `c.co == 64` bias values and `9 * 64` weights, read
+    // in 32-wide output tiles below `c.co`; each store lands in output position
+    // `f < of`, inside `out`.
+    unsafe { first_body!(c, x, out, of, spacing, offset, true) }
 }
+/// # Safety
+/// The CPU must support AVX, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn first_avx(
@@ -153,8 +166,13 @@ unsafe fn first_avx(
     spacing: usize,
     offset: usize,
 ) {
-    first_body!(c, x, out, of, spacing, offset, false)
+    // SAFETY: the shape gives `c.co == 64` bias values and `9 * 64` weights, read
+    // in 32-wide output tiles below `c.co`; each store lands in output position
+    // `f < of`, inside `out`.
+    unsafe { first_body!(c, x, out, of, spacing, offset, false) }
 }
+/// # Safety
+/// The CPU must support SSE4.1, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn first_sse(
@@ -165,70 +183,82 @@ unsafe fn first_sse(
     spacing: usize,
     offset: usize,
 ) {
-    use std::arch::x86_64::*;
-    let rows = frames(x);
-    let op = c.co / c.groups;
-    for f in 0..of {
-        for g in 0..c.groups {
-            for o in (0..op).step_by(16) {
-                let base = g * op + o;
-                let mut a0 = _mm_loadu_ps(c.b.as_ptr().add(base));
-                let mut a1 = _mm_loadu_ps(c.b.as_ptr().add(base + 4));
-                let mut a2 = _mm_loadu_ps(c.b.as_ptr().add(base + 8));
-                let mut a3 = _mm_loadu_ps(c.b.as_ptr().add(base + 12));
-                for (t, row) in rows.iter().enumerate().take(3) {
-                    for k in 0..3 {
-                        let xi = f * c.stride + k;
-                        if xi < c.pad || xi - c.pad >= x.f {
-                            continue;
+    // SAFETY: the shape gives `c.co == 64` bias values and `9 * 64` weights, read
+    // in 16-wide output tiles below `c.co`; each store lands in output position
+    // `f < of`, inside `out`.
+    unsafe {
+        use std::arch::x86_64::*;
+        let rows = frames(x);
+        let op = c.co / c.groups;
+        for f in 0..of {
+            for g in 0..c.groups {
+                for o in (0..op).step_by(16) {
+                    let base = g * op + o;
+                    let mut a0 = _mm_loadu_ps(c.b.as_ptr().add(base));
+                    let mut a1 = _mm_loadu_ps(c.b.as_ptr().add(base + 4));
+                    let mut a2 = _mm_loadu_ps(c.b.as_ptr().add(base + 8));
+                    let mut a3 = _mm_loadu_ps(c.b.as_ptr().add(base + 12));
+                    for (t, row) in rows.iter().enumerate().take(3) {
+                        for k in 0..3 {
+                            let xi = f * c.stride + k;
+                            if xi < c.pad || xi - c.pad >= x.f {
+                                continue;
+                            }
+                            let v = _mm_set1_ps(row[(xi - c.pad) * c.ci + g]);
+                            let w = c.w.as_ptr().add((t * 3 + k) * c.co + base);
+                            a0 = _mm_add_ps(a0, _mm_mul_ps(v, _mm_loadu_ps(w)));
+                            a1 = _mm_add_ps(a1, _mm_mul_ps(v, _mm_loadu_ps(w.add(4))));
+                            a2 = _mm_add_ps(a2, _mm_mul_ps(v, _mm_loadu_ps(w.add(8))));
+                            a3 = _mm_add_ps(a3, _mm_mul_ps(v, _mm_loadu_ps(w.add(12))));
                         }
-                        let v = _mm_set1_ps(row[(xi - c.pad) * c.ci + g]);
-                        let w = c.w.as_ptr().add((t * 3 + k) * c.co + base);
-                        a0 = _mm_add_ps(a0, _mm_mul_ps(v, _mm_loadu_ps(w)));
-                        a1 = _mm_add_ps(a1, _mm_mul_ps(v, _mm_loadu_ps(w.add(4))));
-                        a2 = _mm_add_ps(a2, _mm_mul_ps(v, _mm_loadu_ps(w.add(8))));
-                        a3 = _mm_add_ps(a3, _mm_mul_ps(v, _mm_loadu_ps(w.add(12))));
                     }
+                    let y = out.as_mut_ptr().add(f * spacing + offset + base);
+                    _mm_storeu_ps(y, a0);
+                    _mm_storeu_ps(y.add(4), a1);
+                    _mm_storeu_ps(y.add(8), a2);
+                    _mm_storeu_ps(y.add(12), a3);
                 }
-                let y = out.as_mut_ptr().add(f * spacing + offset + base);
-                _mm_storeu_ps(y, a0);
-                _mm_storeu_ps(y.add(4), a1);
-                _mm_storeu_ps(y.add(8), a2);
-                _mm_storeu_ps(y.add(12), a3);
             }
         }
+        activate(c, out, of, spacing, offset);
     }
-    activate(c, out, of, spacing, offset);
 }
 
+/// # Safety
+/// The CPU must support SSE4.1, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn df5(c: &Conv, x: View<'_>, out: &mut [f32], of: usize, spacing: usize, offset: usize) {
-    use std::arch::x86_64::*;
-    let rows = frames(x);
-    for f in 0..of {
-        let xi = f * c.stride;
-        for g in 0..2 {
-            let mut a = _mm_loadu_ps(c.b.as_ptr().add(g * 5));
-            let mut fifth = c.b[g * 5 + 4];
-            if xi >= c.pad && xi - c.pad < x.f {
-                for (t, row) in rows.iter().enumerate() {
-                    let input = &row[(xi - c.pad) * 64 + g * 32..];
-                    let weights = c.w.as_ptr().add(t * 320 + g * 160);
-                    for (i, &v) in input[..32].iter().enumerate() {
-                        let w = weights.add(i * 5);
-                        a = _mm_add_ps(a, _mm_mul_ps(_mm_loadu_ps(w), _mm_set1_ps(v)));
-                        // Must stay mul+add even on FMA hosts: original op<=8 loop.
-                        fifth += *w.add(4) * v;
+    // SAFETY: the shape gives 10 biases and `5 * 320` weights; group `g < 2` reads
+    // biases `g*5..g*5 + 5` and weight rows `t*320 + g*160 + i*5..+5` for `t < 5`,
+    // `i < 32`, and writes five outputs of position `f < of`, inside `out`.
+    unsafe {
+        use std::arch::x86_64::*;
+        let rows = frames(x);
+        for f in 0..of {
+            let xi = f * c.stride;
+            for g in 0..2 {
+                let mut a = _mm_loadu_ps(c.b.as_ptr().add(g * 5));
+                let mut fifth = c.b[g * 5 + 4];
+                if xi >= c.pad && xi - c.pad < x.f {
+                    for (t, row) in rows.iter().enumerate() {
+                        let input = &row[(xi - c.pad) * 64 + g * 32..];
+                        let weights = c.w.as_ptr().add(t * 320 + g * 160);
+                        for (i, &v) in input[..32].iter().enumerate() {
+                            let w = weights.add(i * 5);
+                            a = _mm_add_ps(a, _mm_mul_ps(_mm_loadu_ps(w), _mm_set1_ps(v)));
+                            // Must stay mul+add even on FMA hosts: original op<=8 loop.
+                            fifth += *w.add(4) * v;
+                        }
                     }
                 }
+                let y = out.as_mut_ptr().add(f * spacing + offset + g * 5);
+                _mm_storeu_ps(y, a);
+                *y.add(4) = fifth;
             }
-            let y = out.as_mut_ptr().add(f * spacing + offset + g * 5);
-            _mm_storeu_ps(y, a);
-            *y.add(4) = fifth;
         }
+        activate(c, out, of, spacing, offset);
     }
-    activate(c, out, of, spacing, offset);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -263,6 +293,8 @@ macro_rules! affine_body {
         activate(c, out, of, spacing, offset);
     }};
 }
+/// # Safety
+/// The CPU must support AVX, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn affine_avx(
@@ -273,20 +305,27 @@ unsafe fn affine_avx(
     spacing: usize,
     offset: usize,
 ) {
-    affine_body!(
-        c,
-        x,
-        out,
-        of,
-        spacing,
-        offset,
-        8,
-        _mm256_loadu_ps,
-        _mm256_storeu_ps,
-        _mm256_add_ps,
-        _mm256_mul_ps
-    )
+    // SAFETY: the shape gives `c.w` and `c.b` `c.co` values and input rows of
+    // `c.ci == c.co`; every vector access stays below `c.co`, and `y` is a checked
+    // subslice of `out`.
+    unsafe {
+        affine_body!(
+            c,
+            x,
+            out,
+            of,
+            spacing,
+            offset,
+            8,
+            _mm256_loadu_ps,
+            _mm256_storeu_ps,
+            _mm256_add_ps,
+            _mm256_mul_ps
+        )
+    }
 }
+/// # Safety
+/// The CPU must support SSE4.1, and the module's kernel contract must hold.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn affine_sse(
@@ -297,19 +336,24 @@ unsafe fn affine_sse(
     spacing: usize,
     offset: usize,
 ) {
-    affine_body!(
-        c,
-        x,
-        out,
-        of,
-        spacing,
-        offset,
-        4,
-        _mm_loadu_ps,
-        _mm_storeu_ps,
-        _mm_add_ps,
-        _mm_mul_ps
-    )
+    // SAFETY: the shape gives `c.w` and `c.b` `c.co` values and input rows of
+    // `c.ci == c.co`; every vector access stays below `c.co`, and `y` is a checked
+    // subslice of `out`.
+    unsafe {
+        affine_body!(
+            c,
+            x,
+            out,
+            of,
+            spacing,
+            offset,
+            4,
+            _mm_loadu_ps,
+            _mm_storeu_ps,
+            _mm_add_ps,
+            _mm_mul_ps
+        )
+    }
 }
 
 // The safe entry is reachable only via load-time geometry + ISA selection.
@@ -345,12 +389,7 @@ wrapper!(affine_checked, affine);
 /// 10,240 bytes per instance. The padding lanes are not model channels.
 #[cfg(target_arch = "x86_64")]
 pub(super) fn prepare_df5(c: &Conv) -> Option<crate::weights::F32s> {
-    if dpdfnet_ops::simd_tier() == 2
-        && c.kt == 5
-        && c.kf == 1
-        && c.ci == 64
-        && c.co == 10
-        && c.groups == 2
+    if ops::simd_tier() == 2 && c.kt == 5 && c.kf == 1 && c.ci == 64 && c.co == 10 && c.groups == 2
     {
         let mut w = vec![0.0f32; 5 * 2 * 32 * 8];
         for t in 0..5 {
@@ -367,6 +406,8 @@ pub(super) fn prepare_df5(c: &Conv) -> Option<crate::weights::F32s> {
     None
 }
 
+/// # Safety
+/// The CPU must support AVX, and the module's kernel contract must hold, and `c.df5_padded` must hold the 32-byte aligned copy `prepare_df5` builds.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn df5_avx(
@@ -377,39 +418,44 @@ unsafe fn df5_avx(
     spacing: usize,
     offset: usize,
 ) {
-    use std::arch::x86_64::*;
-    let rows = frames(x);
-    let w = c
-        .df5_padded
-        .as_ref()
-        .expect("load-time DF5 packing invariant");
-    for f in 0..of {
-        let xi = f * c.stride;
-        for g in 0..2 {
-            let b = c.b.as_ptr().add(g * 5);
-            let mut a = _mm256_set_m128(_mm_set_ss(*b.add(4)), _mm_loadu_ps(b));
-            if xi >= c.pad && xi - c.pad < x.f {
-                for (t, row) in rows.iter().enumerate() {
-                    let input = row.as_ptr().add((xi - c.pad) * 64 + g * 32);
-                    let weight = w.as_ptr().add(t * 512 + g * 256);
-                    for i in 0..32 {
-                        // MUL then ADD in the same t/i order, even on an FMA CPU.
-                        a = _mm256_add_ps(
-                            a,
-                            _mm256_mul_ps(
-                                _mm256_load_ps(weight.add(i * 8)),
-                                _mm256_set1_ps(*input.add(i)),
-                            ),
-                        );
+    // SAFETY: as in `df5`, plus the padded weights: `5 * 512` values from
+    // `prepare_df5`, whose 64-byte aligned blob makes every `_mm256_load_ps` at a
+    // multiple of eight values aligned.
+    unsafe {
+        use std::arch::x86_64::*;
+        let rows = frames(x);
+        let w = c
+            .df5_padded
+            .as_ref()
+            .expect("load-time DF5 packing invariant");
+        for f in 0..of {
+            let xi = f * c.stride;
+            for g in 0..2 {
+                let b = c.b.as_ptr().add(g * 5);
+                let mut a = _mm256_set_m128(_mm_set_ss(*b.add(4)), _mm_loadu_ps(b));
+                if xi >= c.pad && xi - c.pad < x.f {
+                    for (t, row) in rows.iter().enumerate() {
+                        let input = row.as_ptr().add((xi - c.pad) * 64 + g * 32);
+                        let weight = w.as_ptr().add(t * 512 + g * 256);
+                        for i in 0..32 {
+                            // MUL then ADD in the same t/i order, even on an FMA CPU.
+                            a = _mm256_add_ps(
+                                a,
+                                _mm256_mul_ps(
+                                    _mm256_load_ps(weight.add(i * 8)),
+                                    _mm256_set1_ps(*input.add(i)),
+                                ),
+                            );
+                        }
                     }
                 }
+                let y = out.as_mut_ptr().add(f * spacing + offset + g * 5);
+                _mm_storeu_ps(y, _mm256_castps256_ps128(a));
+                _mm_store_ss(y.add(4), _mm256_extractf128_ps::<1>(a));
             }
-            let y = out.as_mut_ptr().add(f * spacing + offset + g * 5);
-            _mm_storeu_ps(y, _mm256_castps256_ps128(a));
-            _mm_store_ss(y.add(4), _mm256_extractf128_ps::<1>(a));
         }
+        activate(c, out, of, spacing, offset);
     }
-    activate(c, out, of, spacing, offset);
 }
 #[cfg(target_arch = "x86_64")]
 wrapper!(df5_avx_checked, df5_avx);

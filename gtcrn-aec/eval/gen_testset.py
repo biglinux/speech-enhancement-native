@@ -14,6 +14,7 @@ Deterministic for a given set of source clips (fixed seed). Run:
   python3 gen_testset.py --far far.wav --near near.wav --noise noise.wav \
       --out ~/.cache/aec-eval/testset
 """
+
 from __future__ import annotations
 
 import argparse
@@ -65,8 +66,13 @@ def synth_rir(rate: int, t60: float, rng: np.random.Generator) -> np.ndarray:
     return rir.astype(np.float32)
 
 
-def make_echo(ref: np.ndarray, rate: int, delay_ms: float, atten_db: float,
-              rng: np.random.Generator) -> np.ndarray:
+def make_echo(
+    ref: np.ndarray,
+    rate: int,
+    delay_ms: float,
+    atten_db: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
     """Loudspeaker echo path: RIR convolution + bulk delay + soft-clip nonlinearity."""
     rir = synth_rir(rate, t60=0.35, rng=rng)
     echo = fftconvolve(ref, rir)[: len(ref)].astype(np.float32)
@@ -81,7 +87,12 @@ def make_echo(ref: np.ndarray, rate: int, delay_ms: float, atten_db: float,
 def write(out: Path, rate: int, scen: str, ref, mic, near, echo) -> None:
     d = out / f"{rate}" / scen
     d.mkdir(parents=True, exist_ok=True)
-    for name, sig in (("ref", ref), ("mic", mic), ("nearend_clean", near), ("echo", echo)):
+    for name, sig in (
+        ("ref", ref),
+        ("mic", mic),
+        ("nearend_clean", near),
+        ("echo", echo),
+    ):
         sf.write(str(d / f"{name}.wav"), np.clip(sig, -1.0, 1.0), rate, subtype="FLOAT")
 
 
@@ -117,8 +128,12 @@ def build(out: Path, rate: int, sources: argparse.Namespace) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--far", type=Path, required=True, help="far-end (loudspeaker) speech")
-    ap.add_argument("--near", type=Path, required=True, help="near-end speech, a second speaker")
+    ap.add_argument(
+        "--far", type=Path, required=True, help="far-end (loudspeaker) speech"
+    )
+    ap.add_argument(
+        "--near", type=Path, required=True, help="near-end speech, a second speaker"
+    )
     ap.add_argument("--noise", type=Path, required=True, help="recorded room noise")
     ap.add_argument("--out", default=str(HOME / ".cache/aec-eval/testset"))
     args = ap.parse_args()

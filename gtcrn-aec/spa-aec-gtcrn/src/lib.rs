@@ -1,5 +1,5 @@
 //! PipeWire SPA AEC plugin exposing `spa_audio_aec`, backed by the native Rust
-//! GTCRN-AEC (`aec-gtcrn`). `module-echo-cancel` loads it via
+//! GTCRN-AEC (`gtcrn-aec`). `module-echo-cancel` loads it via
 //! `library.name = aec/libspa-aec-gtcrn`.
 //!
 //! The graph runs at 48 kHz, mono, planar f32. The band up to 8 kHz is
@@ -11,15 +11,16 @@
 //! Only what `module-echo-cancel` calls is implemented: the factory, the
 //! handle's `get_interface`, and `init`/`init2`/`run`/`activate`/`deactivate`.
 
-#![allow(non_camel_case_types, unsafe_op_in_unsafe_fn)]
+#![allow(non_camel_case_types)]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::io::Write;
 use std::ptr;
 
-use aec_gtcrn::{Model, Streamer, hbaec::HbAec};
-use dfn_ops::resample::{Down3, Up3};
+use gtcrn_aec::{Model, Streamer, hbaec::HbAec};
+use ops::resample::{Down3, Up3};
 
-// ── SPA C ABI structs (mirror spa/support/plugin.h + interfaces/audio/aec.h) ──
+// SPA ABI, mirroring spa/support/plugin.h and spa/interfaces/audio/aec.h.
 
 #[repr(C)]
 struct spa_dict_item {
@@ -167,14 +168,13 @@ const _: () = {
     assert!(offset_of!(spa_audio_aec_methods, init2) == 80);
 };
 
-/// Raw-pointer statics are not `Sync`; the C ABI only reads them. This wrapper
-/// asserts that (the plugin's statics are immutable vtables).
-struct SyncWrap<T>(T);
-// SAFETY: these three immutable statics point only to immutable static data
-// and function entry points. This is NOT a blanket guarantee for arbitrary T.
-unsafe impl Sync for SyncWrap<spa_audio_aec_methods> {}
-unsafe impl Sync for SyncWrap<spa_interface_info> {}
-unsafe impl Sync for SyncWrap<spa_handle_factory> {}
+// SAFETY: the statics of these types hold only pointers to immutable static
+// data and function entry points, and nothing writes through them.
+unsafe impl Sync for spa_audio_aec_methods {}
+// SAFETY: as above.
+unsafe impl Sync for spa_interface_info {}
+// SAFETY: as above.
+unsafe impl Sync for spa_handle_factory {}
 
 const AEC_TYPE: &[u8] = b"Spa:Pointer:Interface:Audio:AEC\0";
 const FACTORY_NAME: &[u8] = b"audio.aec\0";
@@ -184,17 +184,16 @@ const FACTORY_NAME: &[u8] = b"audio.aec\0";
 const AEC_BLOCK: &[u8] = b"768/48000\0";
 const AEC_NAME: &[u8] = b"gtcrn\0";
 const SPA_AUDIO_FORMAT_F32P: u32 = 0x206;
+const SPA_AUDIO_CHANNEL_MONO: u32 = 2;
 const DEFAULT_MODEL: &str = "/usr/share/gtcrn-aec-native/localvqe-pi-aec-v1-49k-f32.gguf";
 const EINVAL: c_int = 22;
 const ENOTSUP: c_int = 95;
-
-// ── engine state ──────────────────────────────────────────────────────────
 
 const MAX_CHUNK: usize = 768; // one 16 kHz neural hop at 48 kHz
 // Input-to-output delay of both bands, independent of the host block size:
 // the pre-filled output hop, the STFT overlap-add hop, and the down- and
 // up-sampling filters. 2 * 768 + 2 * 96 = 1728 samples, 36 ms.
-const AEC_LATENCY_48K: usize = 2 * MAX_CHUNK + 2 * dfn_ops::resample::LPF_DELAY;
+const AEC_LATENCY_48K: usize = 2 * MAX_CHUNK + 2 * ops::resample::LPF_DELAY;
 const MIC_RING: usize = 8192; // > 2·latency + LPF span + one bounded chunk
 
 /// High-band filter block size and partition count (48 kHz): 64 partitions of
@@ -231,15 +230,25 @@ struct Engine {
     hb_blk: Vec<f32>, // reused per-block output
 }
 
+// `init` builds the engine on the main thread and `run` uses it on the data
+// thread through a raw pointer, which the compiler cannot check.
+const _: () = {
+    const fn is_send<T: Send>() {}
+    is_send::<Engine>()
+};
+
 impl Engine {
     fn new(model: Model) -> Result<Self, String> {
         let streamer = Streamer::new(&model)?;
         // Reserve a complete hop before emitting audio. Starting empty inserts
         // zeros at callback boundaries until enough slack accumulates, making
         // latency depend on the callback size and desynchronizing the bands.
-        let mut fifo_out = Vec::with_capacity(2 * MAX_CHUNK);
+        // Most queued before an emit: the pre-filled hop of slack, the hop the
+        // block completes, and the two samples by which the down-sampler's
+        // phase lets a hop complete before its last input arrives.
+        let mut fifo_out = Vec::with_capacity(2 * MAX_CHUNK + 2);
         fifo_out.resize(MAX_CHUNK, 0.0);
-        let mut fifo_gain = Vec::with_capacity(2 * MAX_CHUNK);
+        let mut fifo_gain = Vec::with_capacity(2 * MAX_CHUNK + 2);
         fifo_gain.resize(MAX_CHUNK, 1.0);
         Ok(Self {
             model,
@@ -250,7 +259,7 @@ impl Engine {
             fifo_mic: Vec::with_capacity(2 * Streamer::HOP),
             fifo_ref: Vec::with_capacity(2 * Streamer::HOP),
             fifo_out,
-            lpf: dfn_ops::resample::lpf_prototype_48k(),
+            lpf: ops::resample::lpf_prototype_48k(),
             mic_hist: vec![0.0; MIC_RING].into_boxed_slice(),
             in_count: 0,
             out_count: 0,
@@ -275,7 +284,7 @@ impl Engine {
     /// low-pass. Reads forward to `bi + LPF_DELAY`, so the caller must have
     /// that much history.
     fn band_hi(&self, hist: &[f32], bi: i64) -> f32 {
-        let d = dfn_ops::resample::LPF_DELAY as i64;
+        let d = ops::resample::LPF_DELAY as i64;
         if bi < d {
             return 0.0; // startup: not enough history yet
         }
@@ -289,14 +298,13 @@ impl Engine {
 
     /// Run the high-band canceller over every sample whose low-pass window is
     /// complete, filling `hbout`. The filter adapts only while the low band is
-    /// strongly suppressed, a sign that echo dominates; that is a heuristic,
-    /// not a double-talk detector.
+    /// strongly suppressed, a sign that echo dominates (see `hbaec`).
     ///
     /// Each block reads the ratio of the newest hop whose input it has
     /// entirely seen, a choice fixed by sample counts alone, so the output
     /// does not depend on how the host splits the stream.
     fn feed_high_band(&mut self) {
-        let d = dfn_ops::resample::LPF_DELAY;
+        let d = ops::resample::LPF_DELAY;
         while (self.hb_t + d) < self.in_count {
             let t = self.hb_t as i64;
             self.hb_mic.push(self.band_hi(&self.mic_hist, t));
@@ -325,21 +333,10 @@ impl Engine {
         }
     }
 
+    /// Process one host block of at most `MAX_CHUNK` samples; the bound keeps
+    /// the history rings from wrapping before the high band has consumed them.
     fn run(&mut self, rec: &[f32], play: &[f32], out: &mut [f32]) {
-        assert_eq!(rec.len(), play.len());
-        assert_eq!(rec.len(), out.len());
-        // Bounded chunks keep the history rings from wrapping before the high
-        // band has consumed them.
-        for ((m, r), o) in rec
-            .chunks(MAX_CHUNK)
-            .zip(play.chunks(MAX_CHUNK))
-            .zip(out.chunks_mut(MAX_CHUNK))
-        {
-            self.run_chunk(m, r, o);
-        }
-    }
-
-    fn run_chunk(&mut self, rec: &[f32], play: &[f32], out: &mut [f32]) {
+        assert!(rec.len() <= MAX_CHUNK && play.len() == rec.len() && out.len() == rec.len());
         for (&m, &r) in rec.iter().zip(play.iter()) {
             self.mic_hist[self.in_count % MIC_RING] = m;
             self.ref_hist[self.in_count % MIC_RING] = r;
@@ -355,16 +352,14 @@ impl Engine {
             self.fifo_ref[consumed..].first_chunk(),
         ) {
             let mut o16 = self.streamer.process_hop(&self.model, m, r);
-            // Suppression ratio of this hop, which drives the high-band duck.
-            // The output frame need not describe the same instant as the
-            // input, so this is a coarse signal, not a double-talk detector.
+            // Suppression ratio of this hop, which drives the high-band duck. The
+            // output frame need not describe the same instant as the input.
             let energy =
                 |samples: &[f32]| samples.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>();
             let me = energy(m);
             let oe = energy(&o16);
             // The STFT output includes the previous microphone hop. Keep that
             // hop's energy in the ceiling so a speech offset is not cut short.
-            // Apply the ceiling at every level, including digital silence.
             const MAX_GROWTH: f64 = 4.0; // energy ratio, i.e. 2x amplitude
             let ceiling = me.max(self.previous_mic_energy) * MAX_GROWTH;
             self.previous_mic_energy = me;
@@ -421,7 +416,7 @@ impl Engine {
             // one block), so the sample is always ready; before it, silence.
             let hi = match (self.out_count + j).checked_sub(AEC_LATENCY_48K) {
                 Some(idx) => {
-                    debug_assert!(idx + HB_BLOCK + dfn_ops::resample::LPF_DELAY < self.in_count);
+                    debug_assert!(idx + HB_BLOCK + ops::resample::LPF_DELAY < self.in_count);
                     self.hbout[idx % MIC_RING]
                 }
                 None => 0.0,
@@ -440,63 +435,67 @@ struct Handle {
     engine: *mut Engine, // null until init/init2
 }
 
-// ── method impls ──────────────────────────────────────────────────────────
-
-fn dict_get(args: *const spa_dict, key: &str) -> Option<String> {
-    if args.is_null() {
+/// The value of `key` in `args`.
+///
+/// # Safety
+/// `args` is null or points to a valid `spa_dict` whose `n_items` items, and
+/// their non-null key and value strings, stay valid for the call.
+unsafe fn dict_get(args: *const spa_dict, key: &str) -> Option<String> {
+    // SAFETY: the caller guarantees `args` is null or valid.
+    let d = unsafe { args.as_ref() }?;
+    if d.items.is_null() {
         return None;
     }
-    // SAFETY: PipeWire passes a valid spa_dict or null.
-    let d = unsafe { &*args };
-    for i in 0..d.n_items as isize {
-        let it = unsafe { &*d.items.offset(i) };
-        if it.key.is_null() {
-            continue;
-        }
-        let k = unsafe { CStr::from_ptr(it.key) }.to_string_lossy();
-        if k == key && !it.value.is_null() {
-            return Some(
-                unsafe { CStr::from_ptr(it.value) }
-                    .to_string_lossy()
-                    .into_owned(),
-            );
-        }
-    }
-    None
+    // SAFETY: a non-null `items` holds `n_items` entries.
+    let items = unsafe { std::slice::from_raw_parts(d.items, d.n_items as usize) };
+    items
+        .iter()
+        .filter(|it| !it.key.is_null() && !it.value.is_null())
+        // SAFETY: non-null keys and values are NUL-terminated strings.
+        .find(|it| unsafe { CStr::from_ptr(it.key) }.to_bytes() == key.as_bytes())
+        .map(|it| {
+            // SAFETY: as above.
+            unsafe { CStr::from_ptr(it.value) }
+                .to_string_lossy()
+                .into_owned()
+        })
 }
 
-fn model_path(args: *const spa_dict) -> String {
-    dict_get(args, "gtcrn.model")
-        .or_else(|| std::env::var("AEC_GTCRN_MODEL").ok())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
-}
-
+/// The engine of the handle `object`, once `init` has built it.
+///
+/// # Safety
+/// `object` is null or the `Handle` that `f_init` initialized.
 unsafe fn engine_from(object: *mut c_void) -> Option<*mut Engine> {
-    let h = object as *mut Handle;
-    if h.is_null() || (*h).engine.is_null() {
-        None
-    } else {
-        Some((*h).engine)
-    }
+    // SAFETY: the caller guarantees `object` is null or an initialized Handle.
+    let h = unsafe { object.cast::<Handle>().as_ref() }?;
+    (!h.engine.is_null()).then_some(h.engine)
 }
 
+/// # Safety
+/// `object` is null or an initialized `Handle` not used by another thread
+/// during the call; `args` as for [`dict_get`].
 unsafe fn do_init(object: *mut c_void, args: *const spa_dict) -> c_int {
-    let h = object as *mut Handle;
-    if h.is_null() {
+    // SAFETY: the caller guarantees `object` is null or an exclusive Handle.
+    let Some(h) = (unsafe { object.cast::<Handle>().as_mut() }) else {
         return -EINVAL;
-    }
-    if !(*h).engine.is_null() {
+    };
+    if !h.engine.is_null() {
         return 0;
     }
-    let path = model_path(args);
+    // SAFETY: forwarded from the caller.
+    let path = unsafe { dict_get(args, "gtcrn.model") }.unwrap_or_else(|| DEFAULT_MODEL.into());
     match Model::load(&path).and_then(Engine::new) {
         Ok(engine) => {
-            (*h).engine = Box::into_raw(Box::new(engine));
+            h.engine = Box::into_raw(Box::new(engine));
             0
         }
         Err(error) => {
-            // init runs on the main thread, so stderr (the PipeWire log) is safe.
-            eprintln!("spa-aec-gtcrn: cannot use model {path}: {error}");
+            // init runs on the main thread, so stderr (the PipeWire log) is
+            // usable; a failed write must not abort the host.
+            let _ = writeln!(
+                std::io::stderr(),
+                "spa-aec-gtcrn: cannot use model {path}: {error}"
+            );
             // A file that cannot be opened reports why; one that opens but is
             // not a usable model is invalid.
             -std::fs::File::open(&path)
@@ -507,11 +506,19 @@ unsafe fn do_init(object: *mut c_void, args: *const spa_dict) -> c_int {
     }
 }
 
-unsafe fn valid_format(info: *const spa_audio_info_raw) -> bool {
-    !info.is_null()
-        && (*info).format == SPA_AUDIO_FORMAT_F32P
-        && (*info).rate == 48_000
-        && (*info).channels == 1
+fn valid_format(info: Option<&spa_audio_info_raw>) -> bool {
+    info.is_some_and(|i| i.format == SPA_AUDIO_FORMAT_F32P && i.rate == 48_000 && i.channels == 1)
+}
+
+/// Asks for a mono stream: `module-echo-cancel` adopts the channel layout
+/// `init2` writes back, and its default is stereo.
+fn negotiate_mono(info: Option<&mut spa_audio_info_raw>) -> bool {
+    let Some(i) = info else { return false };
+    if i.channels != 1 {
+        i.channels = 1;
+        i.position[0] = SPA_AUDIO_CHANNEL_MONO;
+    }
+    valid_format(Some(i))
 }
 
 unsafe extern "C" fn m_init(
@@ -519,10 +526,14 @@ unsafe extern "C" fn m_init(
     args: *const spa_dict,
     info: *const spa_audio_info_raw,
 ) -> c_int {
-    if !valid_format(info) {
-        return -EINVAL;
+    // SAFETY: the host passes null or a valid info, the handle it got from
+    // `get_interface` and a null or valid dict, on its main thread.
+    unsafe {
+        if !valid_format(info.as_ref()) {
+            return -EINVAL;
+        }
+        do_init(object, args)
     }
-    do_init(object, args)
 }
 unsafe extern "C" fn m_init2(
     object: *mut c_void,
@@ -532,11 +543,15 @@ unsafe extern "C" fn m_init2(
     third: *mut spa_audio_info_raw,
 ) -> c_int {
     // aec.h and module-echo-cancel name the three streams differently. All
-    // three share one contract, so check each without relying on names/order.
-    if !valid_format(first) || !valid_format(second) || !valid_format(third) {
-        return -EINVAL;
+    // three share one contract, so treat each alike without relying on order.
+    // SAFETY: as in `m_init`; the infos are distinct writable structs.
+    unsafe {
+        let negotiated = [first, second, third].map(|i| negotiate_mono(i.as_mut()));
+        if negotiated.contains(&false) {
+            return -EINVAL;
+        }
+        do_init(object, args)
     }
-    do_init(object, args)
 }
 // module-echo-cancel calls these from stream state changes on the main thread
 // while the data thread may be inside `run`, with no lock between them, so
@@ -556,7 +571,8 @@ unsafe extern "C" fn m_run(
     out: *mut *mut f32,
     n: u32,
 ) -> c_int {
-    let Some(engine) = engine_from(object) else {
+    // SAFETY: `object` is the handle the host got from `get_interface`.
+    let Some(engine) = (unsafe { engine_from(object) }) else {
         return -EINVAL;
     };
     // No buffers are accessed for a zero-size callback.
@@ -566,7 +582,8 @@ unsafe extern "C" fn m_run(
     if rec.is_null() || play.is_null() || out.is_null() {
         return -EINVAL;
     }
-    let (rec0, play0, out0) = (*rec, *play, *out);
+    // SAFETY: each non-null array holds the one channel pointer of a mono stream.
+    let (rec0, play0, out0) = unsafe { (*rec, *play, *out) };
     let n = n as usize;
     if !valid_audio_span(rec0, n)
         || !valid_audio_span(play0, n)
@@ -576,12 +593,12 @@ unsafe extern "C" fn m_run(
     {
         return -EINVAL;
     }
-    // PipeWire supplies disjoint buffers. Staging also permits exact in-place
-    // operation without overlapping Rust slices; partial overlap is rejected
-    // above because a write could clobber a later chunk's unread input.
-    // Pointer validity and length remain the C caller's duty. Non-finite input
-    // becomes silence here, so the engine only ever sees finite samples.
-    let eng = &mut *engine; // lifetime scoped to this serialized SPA call
+    // Staging through local chunks allows exact in-place buffers; partial overlap
+    // is rejected above because a write could clobber input not yet read.
+    // SAFETY: the host serializes `run` and calls nothing else on the engine
+    // meanwhile (`activate`/`deactivate` leave it alone).
+    let eng = unsafe { &mut *engine };
+    let _denormals = ops::DenormalGuard::new();
     let mut mic = [0.0f32; MAX_CHUNK];
     let mut render = [0.0f32; MAX_CHUNK];
     let mut result = [0.0f32; MAX_CHUNK];
@@ -589,14 +606,17 @@ unsafe extern "C" fn m_run(
     while offset < n {
         let count = (n - offset).min(MAX_CHUNK);
         for i in 0..count {
-            let m = rec0.add(offset + i).read();
-            let r = play0.add(offset + i).read();
+            // SAFETY: the spans hold `n` samples (checked above as far as a
+            // pointer can be); reads finish before the writes below.
+            let (m, r) = unsafe { (rec0.add(offset + i).read(), play0.add(offset + i).read()) };
             mic[i] = if m.is_finite() { m } else { 0.0 };
             render[i] = if r.is_finite() { r } else { 0.0 };
         }
         eng.run(&mic[..count], &render[..count], &mut result[..count]);
         for (i, &sample) in result[..count].iter().enumerate() {
-            out0.add(offset + i).write(sample);
+            // SAFETY: as above; an exact in-place output only overwrites input
+            // already read.
+            unsafe { out0.add(offset + i).write(sample) };
         }
         offset += count;
     }
@@ -622,7 +642,7 @@ fn partial_overlap(input: *const f32, output: *const f32, n: usize) -> bool {
     a < b + bytes && b < a + bytes
 }
 
-static METHODS: SyncWrap<spa_audio_aec_methods> = SyncWrap(spa_audio_aec_methods {
+static METHODS: spa_audio_aec_methods = spa_audio_aec_methods {
     version: 3,
     add_listener: None,
     init: Some(m_init),
@@ -634,7 +654,7 @@ static METHODS: SyncWrap<spa_audio_aec_methods> = SyncWrap(spa_audio_aec_methods
     get_params: None,
     set_params: None,
     init2: Some(m_init2),
-});
+};
 
 unsafe extern "C" fn h_get_interface(
     handle: *mut spa_handle,
@@ -644,21 +664,28 @@ unsafe extern "C" fn h_get_interface(
     if handle.is_null() || type_.is_null() || iface.is_null() {
         return -EINVAL;
     }
-    *iface = ptr::null_mut();
-    let want = CStr::from_ptr(type_).to_bytes_with_nul();
-    if want != AEC_TYPE {
-        return -ENOTSUP;
+    // SAFETY: the loader passes the handle `f_init` initialized (a `Handle`,
+    // whose first field is the `spa_handle`), a NUL-terminated type and a
+    // writable result pointer.
+    unsafe {
+        *iface = ptr::null_mut();
+        if CStr::from_ptr(type_).to_bytes_with_nul() != AEC_TYPE {
+            return -ENOTSUP;
+        }
+        *iface = (&raw mut (*handle.cast::<Handle>()).aec).cast();
     }
-    let h = handle as *mut Handle;
-    *iface = &mut (*h).aec as *mut spa_audio_aec as *mut c_void;
     0
 }
 
 unsafe extern "C" fn h_clear(handle: *mut spa_handle) -> c_int {
-    let h = handle as *mut Handle;
-    if !h.is_null() && !(*h).engine.is_null() {
-        drop(Box::from_raw((*h).engine));
-        (*h).engine = ptr::null_mut();
+    // SAFETY: the loader passes null or the handle `f_init` initialized, once,
+    // after the last call into it.
+    if let Some(h) = unsafe { handle.cast::<Handle>().as_mut() }
+        && !h.engine.is_null()
+    {
+        // SAFETY: `engine` came from `Box::into_raw` in `do_init`.
+        drop(unsafe { Box::from_raw(h.engine) });
+        h.engine = ptr::null_mut();
     }
     0
 }
@@ -677,10 +704,11 @@ unsafe extern "C" fn f_init(
     if handle.is_null() {
         return -EINVAL;
     }
-    let h = handle as *mut Handle;
-    ptr::write(
-        h,
-        Handle {
+    let h = handle.cast::<Handle>();
+    // SAFETY: the loader allocates `f_get_size()` bytes, suitably aligned, for
+    // the handle.
+    unsafe {
+        h.write(Handle {
             handle: spa_handle {
                 version: 0,
                 get_interface: Some(h_get_interface),
@@ -688,11 +716,11 @@ unsafe extern "C" fn f_init(
             },
             aec: spa_audio_aec {
                 iface: spa_interface {
-                    type_: AEC_TYPE.as_ptr() as *const c_char,
+                    type_: AEC_TYPE.as_ptr().cast(),
                     version: 1,
                     cb: spa_callbacks {
-                        funcs: &METHODS.0 as *const spa_audio_aec_methods as *const c_void,
-                        data: h as *mut c_void, // methods receive this as `object`
+                        funcs: (&raw const METHODS).cast(),
+                        data: h.cast(), // methods receive this as `object`
                     },
                 },
                 name: AEC_NAME.as_ptr().cast(),
@@ -700,14 +728,14 @@ unsafe extern "C" fn f_init(
                 latency: AEC_BLOCK.as_ptr().cast(),
             },
             engine: ptr::null_mut(),
-        },
-    );
+        });
+    }
     0
 }
 
-static AEC_IFACE_INFO: SyncWrap<spa_interface_info> = SyncWrap(spa_interface_info {
-    type_: AEC_TYPE.as_ptr() as *const c_char,
-});
+static AEC_IFACE_INFO: spa_interface_info = spa_interface_info {
+    type_: AEC_TYPE.as_ptr().cast(),
+};
 
 unsafe extern "C" fn f_enum_interface_info(
     _f: *const spa_handle_factory,
@@ -717,23 +745,26 @@ unsafe extern "C" fn f_enum_interface_info(
     if info.is_null() || index.is_null() {
         return -EINVAL;
     }
-    if *index == 0 {
-        *info = &AEC_IFACE_INFO.0;
-        *index += 1;
-        1
-    } else {
-        0
+    // SAFETY: both are non-null pointers the loader owns for the call.
+    unsafe {
+        if *index == 0 {
+            *info = &AEC_IFACE_INFO;
+            *index += 1;
+            1
+        } else {
+            0
+        }
     }
 }
 
-static FACTORY: SyncWrap<spa_handle_factory> = SyncWrap(spa_handle_factory {
+static FACTORY: spa_handle_factory = spa_handle_factory {
     version: 1,
-    name: FACTORY_NAME.as_ptr() as *const c_char,
+    name: FACTORY_NAME.as_ptr().cast(),
     info: ptr::null(),
     get_size: Some(f_get_size),
     init: Some(f_init),
     enum_interface_info: Some(f_enum_interface_info),
-});
+};
 
 /// SPA plugin entry point: enumerate this plugin's handle factories.
 ///
@@ -749,12 +780,15 @@ pub unsafe extern "C" fn spa_handle_factory_enum(
     if factory.is_null() || index.is_null() {
         return -EINVAL;
     }
-    if *index == 0 {
-        *factory = &FACTORY.0;
-        *index += 1;
-        1
-    } else {
-        0
+    // SAFETY: both are non-null pointers the loader owns for the call.
+    unsafe {
+        if *index == 0 {
+            *factory = &FACTORY;
+            *index += 1;
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -797,8 +831,8 @@ mod split_band_tests {
 
     // Split `x` into (low, high) band energy with the plugin's own low-pass.
     fn band_energies(x: &[f32]) -> (f64, f64) {
-        let lpf = dfn_ops::resample::lpf_prototype_48k();
-        let d = dfn_ops::resample::LPF_DELAY;
+        let lpf = ops::resample::lpf_prototype_48k();
+        let d = ops::resample::LPF_DELAY;
         let taps = lpf.len();
         let (mut lo, mut hi) = (0.0f64, 0.0f64);
         for bi in taps..x.len().saturating_sub(d) {
@@ -831,7 +865,7 @@ mod split_band_tests {
             out
         };
         let expected = render(test_engine(), 768);
-        for quantum in [1, 128, 256, 480, 1024] {
+        for quantum in [1, 128, 256, 480, 767] {
             let actual = render(test_engine(), quantum);
             let error = actual
                 .iter()
@@ -885,7 +919,7 @@ mod split_band_tests {
         let mic = sine(freq, 0.2, 48_000);
         let (s, e) = (24_000, 43_200);
         let mut acc = 0.0f32;
-        let delay = dfn_ops::resample::LPF_DELAY;
+        let delay = ops::resample::LPF_DELAY;
         for (i, &sample) in mic.iter().enumerate() {
             eng.mic_hist[eng.in_count % super::MIC_RING] = sample;
             eng.in_count += 1;
@@ -997,17 +1031,102 @@ mod abi_contract_tests {
             channels: 1,
             position: [0; 64],
         };
+        assert!(valid_format(Some(&info)));
+        assert!(!valid_format(None));
+        info.rate = 44_100;
+        assert_eq!(
+            // SAFETY: m_init rejects the rate before it touches the null object.
+            unsafe { m_init(ptr::null_mut(), ptr::null(), &info) },
+            -EINVAL
+        );
+        info.rate = 48_000;
+        info.channels = 2;
+        assert!(!valid_format(Some(&info)));
+        info.channels = 1;
+        info.format = 0;
+        assert!(!valid_format(Some(&info)));
+    }
+
+    #[test]
+    fn init2_turns_the_default_stereo_streams_mono() {
+        let model = std::ffi::CString::new(TEST_MODEL).unwrap();
+        let items = [spa_dict_item {
+            key: c"gtcrn.model".as_ptr(),
+            value: model.as_ptr(),
+        }];
+        let dict = spa_dict {
+            flags: 0,
+            n_items: 1,
+            items: items.as_ptr(),
+        };
+        let stereo = || {
+            let mut position = [0; 64];
+            position[..2].copy_from_slice(&[3, 4]); // FL, FR
+            spa_audio_info_raw {
+                format: SPA_AUDIO_FORMAT_F32P,
+                flags: 0,
+                rate: 48_000,
+                channels: 2,
+                position,
+            }
+        };
+        let mut infos = [stereo(), stereo(), stereo()];
+        let mut handle = std::mem::MaybeUninit::<Handle>::uninit();
+        let [a, b, c] = &mut infos;
+        // SAFETY: `handle` has room for a Handle, the infos outlive the calls,
+        // and the handle is cleared once.
         unsafe {
-            assert!(valid_format(&info));
-            assert!(!valid_format(ptr::null()));
-            info.rate = 44_100;
-            assert_eq!(m_init(ptr::null_mut(), ptr::null(), &info), -EINVAL);
-            info.rate = 48_000;
-            info.channels = 2;
-            assert!(!valid_format(&info));
-            info.channels = 1;
-            info.format = 0;
-            assert!(!valid_format(&info));
+            let h = handle.as_mut_ptr();
+            assert_eq!(
+                f_init(ptr::null(), h.cast(), ptr::null(), ptr::null(), 0),
+                0
+            );
+            assert_eq!(m_init2(h.cast(), &dict, a, b, c), 0);
+            h_clear(h.cast());
+        }
+        for info in infos {
+            assert_eq!(
+                (info.channels, info.position[0]),
+                (1, SPA_AUDIO_CHANNEL_MONO)
+            );
+        }
+        let mut wrong_rate = stereo();
+        wrong_rate.rate = 44_100;
+        assert!(!negotiate_mono(Some(&mut wrong_rate)));
+    }
+
+    #[test]
+    fn dict_get_skips_null_entries() {
+        let items = [
+            spa_dict_item {
+                key: ptr::null(),
+                value: c"x".as_ptr(),
+            },
+            spa_dict_item {
+                key: c"gtcrn.model".as_ptr(),
+                value: ptr::null(),
+            },
+            spa_dict_item {
+                key: c"gtcrn.model".as_ptr(),
+                value: c"/m.gguf".as_ptr(),
+            },
+        ];
+        let dict = spa_dict {
+            flags: 0,
+            n_items: 3,
+            items: items.as_ptr(),
+        };
+        let no_items = spa_dict {
+            flags: 0,
+            n_items: 2,
+            items: ptr::null(),
+        };
+        // SAFETY: `dict` points to live NUL-terminated strings; `no_items` and the
+        // null dict exercise the null checks.
+        unsafe {
+            assert_eq!(dict_get(&dict, "gtcrn.model").as_deref(), Some("/m.gguf"));
+            assert_eq!(dict_get(&no_items, "gtcrn.model"), None);
+            assert_eq!(dict_get(ptr::null(), "gtcrn.model"), None);
         }
     }
 
@@ -1031,6 +1150,8 @@ mod abi_contract_tests {
             position: [0; 64],
         };
         let mut handle = std::mem::MaybeUninit::<Handle>::uninit();
+        // SAFETY: `handle` has room for a Handle, the buffers outlive the calls,
+        // and the handle is cleared once.
         unsafe {
             let h = handle.as_mut_ptr();
             assert_eq!(
@@ -1091,6 +1212,8 @@ mod abi_contract_tests {
         let mut rec = mic.to_vec();
         let mut out = vec![0.0; mic.len()];
         let mut handle = std::mem::MaybeUninit::<Handle>::uninit();
+        // SAFETY: `handle` has room for a Handle, the buffers outlive the calls,
+        // and the handle is cleared once.
         unsafe {
             let h = handle.as_mut_ptr();
             assert_eq!(
@@ -1150,51 +1273,17 @@ mod abi_contract_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "../../../testdata/heap_calls.rs"]
+mod heap_calls;
+
 // The engine runs on PipeWire's data thread: after warm-up, and on the first
 // callback from a thread other than the one that built it, it must not touch
 // the heap.
 #[cfg(test)]
 mod rt_alloc_tests {
     use super::{MAX_CHUNK, test_engine};
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    thread_local! {
-        static ARMED: Cell<bool> = const { Cell::new(false) };
-        static HEAP_CALLS: Cell<usize> = const { Cell::new(0) };
-    }
-    struct Counting;
-    impl Counting {
-        fn note() {
-            if ARMED.try_with(Cell::get).unwrap_or(false) {
-                let _ = HEAP_CALLS.try_with(|c| c.set(c.get() + 1));
-            }
-        }
-    }
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-            Self::note();
-            unsafe { System.alloc(l) }
-        }
-        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-            Self::note();
-            unsafe { System.dealloc(p, l) }
-        }
-        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
-            Self::note();
-            unsafe { System.realloc(p, l, n) }
-        }
-    }
-    #[global_allocator]
-    static GA: Counting = Counting;
-
-    fn heap_calls(f: impl FnOnce()) -> usize {
-        HEAP_CALLS.with(|c| c.set(0));
-        ARMED.with(|a| a.set(true));
-        f();
-        ARMED.with(|a| a.set(false));
-        HEAP_CALLS.with(Cell::get)
-    }
+    use crate::heap_calls::heap_calls;
 
     #[test]
     fn engine_run_is_alloc_free_after_warmup() {
@@ -1216,6 +1305,22 @@ mod rt_alloc_tests {
             }
         });
         assert_eq!(calls, 0, "Engine::run used the heap");
+    }
+
+    // A host block that ends one or two samples before a hop boundary,
+    // followed by a full block, leaves the most output queued.
+    #[test]
+    fn blocks_ending_just_before_a_hop_are_alloc_free() {
+        let mut eng = test_engine();
+        let (mic, render) = ([0.05; MAX_CHUNK], [0.1; MAX_CHUNK]);
+        let mut out = [0.0; MAX_CHUNK];
+        eng.run(
+            &mic[..MAX_CHUNK - 2],
+            &render[..MAX_CHUNK - 2],
+            &mut out[..MAX_CHUNK - 2],
+        );
+        let calls = heap_calls(|| eng.run(&mic, &render, &mut out));
+        assert_eq!(calls, 0, "a full block after a short one used the heap");
     }
 
     #[test]

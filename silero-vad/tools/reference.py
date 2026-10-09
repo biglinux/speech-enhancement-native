@@ -34,8 +34,14 @@ def signal(rate):
     """Speech, half a second of silence, more speech, half a second of noise, repeated."""
     step = 48000 // rate
     gap = rate // 2
-    block = np.concatenate([pcm("speech.pcm")[::step], np.zeros(gap, np.float32),
-                            pcm("continuous-speech.pcm")[::step], lcg_noise(gap)])
+    block = np.concatenate(
+        [
+            pcm("speech.pcm")[::step],
+            np.zeros(gap, np.float32),
+            pcm("continuous-speech.pcm")[::step],
+            lcg_noise(gap),
+        ]
+    )
     whole = np.tile(block, -(-SECONDS * rate // len(block)))
     return whole[: SECONDS * rate].astype(np.float32)
 
@@ -44,8 +50,13 @@ def probabilities(model, audio16):
     import torch
 
     model.reset_states()
-    return np.array([model(torch.from_numpy(audio16[i : i + 512].copy()), 16000).item()
-                     for i in range(0, len(audio16) - 511, 512)], np.float32)
+    return np.array(
+        [
+            model(torch.from_numpy(audio16[i : i + 512].copy()), 16000).item()
+            for i in range(0, len(audio16) - 511, 512)
+        ],
+        np.float32,
+    )
 
 
 def main(package, out):
@@ -60,7 +71,9 @@ def main(package, out):
     core.tofile(out / "expected_16k.f32")
     wide = probabilities(model, resample_poly(signal(48000), 1, 3).astype(np.float32))
     wide.tofile(out / "expected_48k.f32")
-    print(f"{len(core)} + {len(wide)} probabilities, speech share {np.mean(core > 0.5):.2f}")
+    print(
+        f"{len(core)} + {len(wide)} probabilities, speech share {np.mean(core > 0.5):.2f}"
+    )
 
 
 if __name__ == "__main__":

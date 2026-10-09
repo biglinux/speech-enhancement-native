@@ -8,18 +8,10 @@
 
 ## Current cost
 
-CPU seconds per minute of audio on one core:
-
-| Engine | i5-13400 | i3-2375M |
-|---|---:|---:|
-| DeepFilterNet3 | 0.8 | 5.2 |
-| DeepFilterNet3-LL | 2.1 | 15.2 |
-| DPDFNet-2 48 kHz HR | 3.9 | 27.3 |
-| GTCRN-AEC, 16 kHz streaming core | 1.2 | 7.2 |
-
-Input: one minute of noisy speech at 48 kHz for the denoisers
-(`dfn3_cli`, `dfn3ll_cli`, `dpdfnet-enhance --threads 1`) and two minutes of 16 kHz
-microphone and loopback signals for the AEC (`aec_run` with `AEC_STREAM=1`).
+The cost table is in the [README](../README.md#cpu-cost). Its input is one minute
+of noisy speech at 48 kHz for the denoisers (`dfn3_cli`, `dfn3ll_cli`,
+`dpdfnet-enhance --threads 1`) and two minutes of 16 kHz microphone and loopback
+signals for the AEC (`aec_run` with `AEC_STREAM=1`).
 
 ## Measuring
 
@@ -61,8 +53,8 @@ taskset -c 4 perf stat -e task-clock,cycles:u,instructions:u -- <command>
 
 | Idea | Result |
 |---|---|
-| int8 activations (W8A8) | `pmaddubsw` saturates on AVX; exact A8 needs 7-bit weights or int16 widening, which is the current kernel. |
-| int4 DPDFNet weights | GPTQ with groups of 32 loses 0.05–0.13 dB SI-SDR against 0.00 dB for int8; memory stalls beyond L2 are only 6% of the i3's cycles. |
-| int8 GTCRN-AEC GRUs | The GRUs are 5% of the time; about 2% to gain and the reference comparison would break. |
+| int8 activations (W8A8) | Not exact on AVX ([DeepFilterNet3](deepfilternet3.md#signal-path)). |
+| int4 DPDFNet weights | Loses quality for little gain ([DPDFNet](dpdfnet.md#why-int8-and-not-int4)). |
+| int8 GTCRN-AEC GRUs | About 2% to gain ([GTCRN-AEC](gtcrn-aec.md#network)). |
 | `vzeroupper` fixes | `other_assists.avx_to_sse` reads zero; there is no AVX→SSE transition penalty to remove. |
 | Branchless Kalman select in the DAF | No change in cycles. |

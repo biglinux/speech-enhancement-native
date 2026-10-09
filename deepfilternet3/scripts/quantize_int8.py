@@ -20,6 +20,7 @@ Everything else stays f32.
 Usage: quantize_int8.py F32_BLOB F32_TABLE HID OUT_BLOB
   HID is 256 for DeepFilterNet3 and 512 for DeepFilterNet3-LL.
 """
+
 import re
 import sys
 
@@ -29,14 +30,20 @@ import numpy as np
 def main() -> None:
     if len(sys.argv) != 5:
         sys.exit(__doc__)
-    blob_path, table_path, hid, out_path = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+    blob_path, table_path, hid, out_path = (
+        sys.argv[1],
+        sys.argv[2],
+        int(sys.argv[3]),
+        sys.argv[4],
+    )
 
     buf = np.fromfile(blob_path, dtype="<f4")
     with open(table_path) as f:
         layout = [
             (m[0], int(m[1]), int(m[2]))
             for m in re.findall(
-                r"pub fn (\w+)\(&self\) -> &\[f32\] \{ self\.s\((\d+), (\d+)\) \}", f.read()
+                r"pub fn (\w+)\(&self\) -> &\[f32\] \{ self\.s\((\d+), (\d+)\) \}",
+                f.read(),
             )
         ]
     if not layout:
@@ -47,7 +54,9 @@ def main() -> None:
         data = buf[off : off + n]
         if re.search(r"_gru\d*_[WR]$", name):
             if n != 3 * hid * hid:
-                sys.exit(f"{name}: expected {3 * hid * hid} values for HID {hid}, got {n}")
+                sys.exit(
+                    f"{name}: expected {3 * hid * hid} values for HID {hid}, got {n}"
+                )
             w = data.reshape(3 * hid, hid)
             sc = np.abs(w).max(axis=1) / 127.0
             sc[sc == 0] = 1.0

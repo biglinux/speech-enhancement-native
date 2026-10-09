@@ -1,6 +1,6 @@
 //! Matrix, GRU and LayerNorm weights. Batches of four vectors share every int8
 //! weight load.
-use crate::weights::{float, num, require, string, Bundle, F32s, I16s, I8s, Result};
+use crate::weights::{Bundle, F32s, I8s, I16s, Result, float, num, require, string};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -52,10 +52,12 @@ impl Matrix {
     /// Switches a 192x64 int8 matrix to the AVX2 kernel over i16 weights.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn widen(&mut self, b: &Bundle) -> Result<()> {
-        if dpdfnet_ops::simd_tier() == 3 && self.rows == 192 && self.cols == 64 {
-            if let Storage::Packed(w, _) = &self.storage {
-                self.widened = Some(b.widened_recurrent(w)?);
-            }
+        if ops::simd_tier() == 3
+            && self.rows == 192
+            && self.cols == 64
+            && let Storage::Packed(w, _) = &self.storage
+        {
+            self.widened = Some(b.widened_recurrent(w)?);
         }
         Ok(())
     }
@@ -64,18 +66,18 @@ impl Matrix {
         debug_assert_eq!(y.len(), self.rows);
         #[cfg(target_arch = "x86_64")]
         if let (Some(w), Storage::Packed(_, s)) = (&self.widened, &self.storage) {
-            let scale = dpdfnet_ops::quantize_i16(x, &mut q[..self.cols]);
+            let scale = ops::quantize_i16(x, &mut q[..self.cols]);
             crate::packed::widened_one(y, w, s, &q[..self.cols], scale);
             return;
         }
         match &self.storage {
             Storage::Float(w) => {
                 for (r, o) in y.iter_mut().enumerate() {
-                    *o = dpdfnet_ops::vdot_f32(&w[r * self.cols..(r + 1) * self.cols], x);
+                    *o = ops::vdot_f32(&w[r * self.cols..(r + 1) * self.cols], x);
                 }
             }
             Storage::Packed(w, s) => {
-                let scale = dpdfnet_ops::quantize_i16(x, &mut q[..self.cols]);
+                let scale = ops::quantize_i16(x, &mut q[..self.cols]);
                 self.plan
                     .apply(y, w, s, &q[..self.cols], &[scale], self.rows, self.cols, 1);
             }
@@ -93,7 +95,7 @@ impl Matrix {
             while pos + 4 <= count {
                 let mut sx = [0.0f32; 4];
                 for k in 0..4 {
-                    sx[k] = dpdfnet_ops::quantize_i16(
+                    sx[k] = ops::quantize_i16(
                         &x[(pos + k) * n..(pos + k + 1) * n],
                         &mut q[k * n..(k + 1) * n],
                     );
@@ -198,7 +200,7 @@ impl GruWeights {
         })
     }
     pub fn update(&self, wx: &[f32], rh: &[f32], h: &mut [f32]) {
-        dpdfnet_ops::gru_update(h, wx, rh, &self.bias);
+        ops::gru_update(h, wx, rh, &self.bias);
     }
 }
 
@@ -217,7 +219,7 @@ impl LayerNorm {
             eps,
         })
     }
-    /// PyTorch biased variance (divide by C, NOT C-1), over channels only.
+    /// PyTorch biased variance (divide by C, not C-1), over channels only.
     pub fn apply_add(&self, x: &mut [f32], residual: &[f32]) {
         let c = x.len();
         let mean = x.iter().sum::<f32>() / c as f32;
@@ -232,7 +234,7 @@ impl LayerNorm {
 #[cfg(test)]
 mod batch_tests {
     use super::*;
-    use crate::test_support::{assert_bits, Writer};
+    use crate::test_support::{Writer, assert_bits};
     #[test]
     fn single_batch_and_prequantized_have_identical_bits() {
         for (m, n) in [(192, 64), (768, 256), (24, 6)] {
@@ -256,10 +258,8 @@ mod batch_tests {
                         &mut base[k * m..(k + 1) * m],
                         &mut q,
                     );
-                    scales[k] = dpdfnet_ops::quantize_i16(
-                        &x[k * n..(k + 1) * n],
-                        &mut full[k * n..(k + 1) * n],
-                    );
+                    scales[k] =
+                        ops::quantize_i16(&x[k * n..(k + 1) * n], &mut full[k * n..(k + 1) * n]);
                 }
                 matrix.batch(&x, &mut batch, count, &mut q);
                 matrix.batch_prequantized(&full, &scales, &mut shared, count);
@@ -273,7 +273,7 @@ mod batch_tests {
 #[cfg(all(test, target_arch = "x86_64"))]
 mod widened_tests {
     use super::*;
-    use crate::test_support::{assert_bits, Writer};
+    use crate::test_support::{Writer, assert_bits};
     #[test]
     fn widened_recurrent_is_exact_and_shared() {
         let mut writer = Writer::new();
@@ -284,7 +284,7 @@ mod widened_tests {
         candidate.widen(&bundle).unwrap();
         let mut second = base.clone();
         second.widen(&bundle).unwrap();
-        if dpdfnet_ops::simd_tier() == 3 {
+        if ops::simd_tier() == 3 {
             let (a, b) = (candidate.widened.as_ref(), second.widened.as_ref());
             assert_eq!(a.unwrap().as_ptr(), b.unwrap().as_ptr());
         }

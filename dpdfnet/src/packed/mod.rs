@@ -7,9 +7,11 @@
 //! Preconditions established by Matrix/Bundle: rows%8 == 0, cols%2 == 0,
 //! cols <= 1024, weights in [-127,127], activations in [-16383,16383]. The sum
 //! of absolute products is <= 2_130_576_384, so all INT32 partial sums fit.
-//! Two accumulator stripes shorten the dependency chain WITHOUT changing sums.
-//! tools/pack_matrices.py packs the bundle; dispatch is resolved at load, and
-//! processing neither allocates nor locks. Dequantization deliberately remains (sum as f32 * sw) * sx.
+//! Two accumulator stripes shorten the dependency chain; integer addition is
+//! associative, so the sums are unchanged. tools/pack_matrices.py packs the
+//! bundle; dispatch is resolved at load, and processing neither allocates nor
+//! locks. Dequantization is `(sum as f32 * sw) * sx`; another order changes the
+//! output bits.
 
 #[cfg(target_arch = "x86_64")]
 mod wide;
@@ -25,6 +27,14 @@ pub(crate) struct Plan {
     one: Run,
     four: Run,
 }
+/// A packed product kernel: `(out, w, sw, q, sx, rows, cols)` over `B` vectors,
+/// where `B` is 1 or 4 by the kernel.
+///
+/// # Safety
+/// The CPU must support the kernel's target features. `rows` must be a positive
+/// multiple of 8 and `cols` an even number in `2..=1024`; `w` must hold the
+/// `rows * cols` pair-packed weights, `sw` `rows` scales, `q` `B * cols`
+/// activations, `sx` `B` scales and `out` `B * rows` values.
 type Run = unsafe fn(&mut [f32], &[i8], &[f32], &[i16], &[f32], usize, usize);
 impl Plan {
     pub(crate) fn select() -> Self {
@@ -89,6 +99,8 @@ impl Plan {
     }
 }
 
+/// # Safety
+/// None: it indexes with bounds checks and is `unsafe` only to be a [`Run`].
 unsafe fn scalar<const B: usize>(
     out: &mut [f32],
     w: &[i8],
@@ -110,6 +122,8 @@ unsafe fn scalar<const B: usize>(
     }
 }
 
+/// # Safety
+/// The CPU must support AVX2, and the arguments must satisfy the [`Run`] contract.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn avx2<const B: usize>(
@@ -121,38 +135,43 @@ unsafe fn avx2<const B: usize>(
     rows: usize,
     cols: usize,
 ) {
-    use std::arch::x86_64::*;
-    for r in (0..rows).step_by(8) {
-        let wp = w.as_ptr().add(r * cols);
-        let mut a = [_mm256_setzero_si256(); B];
-        let mut b = [_mm256_setzero_si256(); B];
-        let mut j = 0;
-        while j + 4 <= cols {
-            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
-            let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add((j + 2) * 8).cast()));
-            for (k, acc) in a.iter_mut().enumerate() {
-                let x = q.as_ptr().add(k * cols + j);
-                let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
-                let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
-                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
-                b[k] = _mm256_add_epi32(b[k], _mm256_madd_epi16(w1, x1));
+    // SAFETY: tile `r` reads the `8 * cols` packed bytes at `w[r * cols..]`, input
+    // pairs `j < cols` of each vector, and writes eight outputs per vector, all
+    // below the `Run` lengths.
+    unsafe {
+        use std::arch::x86_64::*;
+        for r in (0..rows).step_by(8) {
+            let wp = w.as_ptr().add(r * cols);
+            let mut a = [_mm256_setzero_si256(); B];
+            let mut b = [_mm256_setzero_si256(); B];
+            let mut j = 0;
+            while j + 4 <= cols {
+                let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
+                let w1 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add((j + 2) * 8).cast()));
+                for (k, acc) in a.iter_mut().enumerate() {
+                    let x = q.as_ptr().add(k * cols + j);
+                    let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(x.cast::<i32>()));
+                    let x1 = _mm256_set1_epi32(std::ptr::read_unaligned(x.add(2).cast::<i32>()));
+                    *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
+                    b[k] = _mm256_add_epi32(b[k], _mm256_madd_epi16(w1, x1));
+                }
+                j += 4;
             }
-            j += 4;
-        }
-        if j < cols {
-            let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
-            for (k, acc) in a.iter_mut().enumerate() {
-                let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(
-                    q.as_ptr().add(k * cols + j).cast::<i32>(),
-                ));
-                *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
+            if j < cols {
+                let w0 = _mm256_cvtepi8_epi16(_mm_loadu_si128(wp.add(j * 8).cast()));
+                for (k, acc) in a.iter_mut().enumerate() {
+                    let x0 = _mm256_set1_epi32(std::ptr::read_unaligned(
+                        q.as_ptr().add(k * cols + j).cast::<i32>(),
+                    ));
+                    *acc = _mm256_add_epi32(*acc, _mm256_madd_epi16(w0, x0));
+                }
             }
-        }
-        let scales = _mm256_loadu_ps(sw.as_ptr().add(r));
-        for k in 0..B {
-            let sums = _mm256_cvtepi32_ps(_mm256_add_epi32(a[k], b[k]));
-            let values = _mm256_mul_ps(_mm256_mul_ps(sums, scales), _mm256_set1_ps(sx[k]));
-            _mm256_storeu_ps(out.as_mut_ptr().add(k * rows + r), values);
+            let scales = _mm256_loadu_ps(sw.as_ptr().add(r));
+            for k in 0..B {
+                let sums = _mm256_cvtepi32_ps(_mm256_add_epi32(a[k], b[k]));
+                let values = _mm256_mul_ps(_mm256_mul_ps(sums, scales), _mm256_set1_ps(sx[k]));
+                _mm256_storeu_ps(out.as_mut_ptr().add(k * rows + r), values);
+            }
         }
     }
 }
@@ -211,6 +230,8 @@ mod tests {
         }
         let check = |run: Run| {
             let mut out = vec![123.25; B * rows + 2];
+            // SAFETY: each kernel is passed only after its features are detected, and
+            // the buffers have the `Run` lengths for these shapes.
             unsafe { run(&mut out[1..B * rows + 1], &p, &sw, &q, &sx, rows, cols) };
             assert_eq!(out[0], 123.25);
             assert_eq!(out[B * rows + 1], 123.25);

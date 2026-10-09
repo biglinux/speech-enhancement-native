@@ -1,6 +1,6 @@
 //! The offline pipeline against the plugin, with the shipped model or the
 //! bundle in DPDFNET_TEST_MODEL.
-use dpdfnet_native::{audio::LATENCY, offline, AudioProcessor, Bundle};
+use dpdfnet_native::{AudioProcessor, Bundle, audio::LATENCY, offline};
 fn load() -> std::sync::Arc<Bundle> {
     let dir = std::env::var_os("DPDFNET_TEST_MODEL").map_or_else(
         || concat!(env!("CARGO_MANIFEST_DIR"), "/model/dpdfnet2_48khz_hr-w8a16").into(),

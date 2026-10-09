@@ -1,6 +1,7 @@
 # AEC candidates on a synthetic 16 kHz test set
 
-Produced at commit 9d3ae93 (2026-09-28). The `localvqe_*` rows are the
+Measured on 2026-09-28 with the code of the commit that added GTCRN-AEC; the CPU
+and the source clips were not recorded. The `localvqe_*` rows are the
 LocalVQE ggml CLI running each GGUF over whole files at 16 kHz. They measure
 the network the plugin ports, not the Rust port itself and not the shipped
 plugin, which runs at 48 kHz and adds a separate filter above 8 kHz
@@ -27,7 +28,7 @@ localvqe_200k |    9.32 |   10.68 |     4.2 |   0.967 |    1.04 |   0.368 | 0.31
 - NE-PESQ, NE-STOI: near-end speech with no echo, against the clean near end
   (PESQ 1 to 4.5, STOI 0 to 1).
 - DT-PESQ, DT-STOI: the same during double talk.
-- RTf: processing time over audio time, one thread. The CPU was not recorded.
+- RTf: processing time over audio time, one thread.
 - lat_ms: the frame or hop length each runner reports, not a measured delay.
 - wt_KB: size of the weight files.
 
@@ -41,7 +42,6 @@ or trimmed to 10 s and set to -16, -20 and -48 dBFS RMS. The echo is the far
 end through a synthetic exponentially decaying room response (T60 0.35 s), a
 `tanh` soft clip and a 45 ms delay, at -15 dBFS; in `delaychange` the delay
 moves to 95 ms halfway. The seed is fixed, so the same clips give the same set.
-Which clips produced the table was not recorded.
 
 Every candidate's output is aligned in delay and gain to its target before
 `score.py` computes ERLE, PESQ and STOI. WebRTC is the PipeWire plugin

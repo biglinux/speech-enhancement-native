@@ -37,12 +37,16 @@ def main(src, dst):
     import onnx
     from onnx import numpy_helper
 
-    tensors = {t.name: numpy_helper.to_array(t) for t in onnx.load(src).graph.initializer}
+    tensors = {
+        t.name: numpy_helper.to_array(t) for t in onnx.load(src).graph.initializer
+    }
     out = bytearray()
     for name, shape in ORDER:
         tensor = tensors[name]
         if tensor.dtype != np.float32 or tensor.shape != shape:
-            sys.exit(f"{name}: expected float32 {shape}, found {tensor.dtype} {tensor.shape}")
+            sys.exit(
+                f"{name}: expected float32 {shape}, found {tensor.dtype} {tensor.shape}"
+            )
         out += tensor.astype("<f4").tobytes()
     open(dst, "wb").write(out)
     print(f"{dst}: {len(out)} bytes, {len(out) // 4} weights")

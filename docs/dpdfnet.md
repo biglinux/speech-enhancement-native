@@ -118,7 +118,8 @@ filters come on top.
 Splitting the same input into blocks of 1, 7, 64, 128, 256, 480, 512, 960, 1024
 or 8192 samples gives identical output. Attenuation 0 dB is the aligned dry
 signal, 100 dB full enhancement; changes are smoothed over up to five hops and
-every frame is still inferred. NaN/Inf input is replaced by zero. An FFT error,
+every frame is still inferred. The first control after `activate` applies at
+once, since the ports may be connected after `activate`. NaN/Inf input is replaced by zero. An FFT error,
 a non-finite result or a panic sets the `Processing fault` port and outputs
 silence until reset; the plugin never falls back to raw audio, and no panic
 unwinds into the host.
@@ -165,8 +166,9 @@ backwards as in the converters, for any length and any thread count.
 Stage threads are pinned, one per physical core, fastest cores first. Left to
 the scheduler, stages that sleep between hops often share the two hyperthreads
 of one core and run at about half speed: 2.5 s instead of 1.2 s for a minute
-of mono on the i5-13400. The default thread count is the number of cores of
-the fastest kind; more threads land on E-cores or hyperthreads and are slower.
+of mono on the i5-13400. The default thread count is the number of cores
+within 10% of the top rated frequency, at most 256; more threads land on
+E-cores or hyperthreads and are slower.
 
 | | LADSPA | `dpdfnet-enhance` |
 |---|---:|---:|

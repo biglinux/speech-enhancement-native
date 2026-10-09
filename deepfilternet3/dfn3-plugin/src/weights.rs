@@ -1,7 +1,7 @@
 //! The embedded weight blob: f32 tensors, the int8 GRU matrices and their per-row
 //! f32 scales, viewed in place.
 
-use dfn_ops::pack_format::{sections, Geometry};
+use ops::pack_format::{Geometry, sections};
 
 /// A weight blob aligned so its f32 sections can be viewed without a copy.
 #[repr(C, align(64))]
@@ -44,9 +44,9 @@ impl Tensors {
                 ),
             }
         };
-        dfn_ops::mlock_slice(t.floats);
-        dfn_ops::mlock_slice(t.integers);
-        dfn_ops::mlock_slice(t.scales);
+        ops::mlock_slice(t.floats);
+        ops::mlock_slice(t.integers);
+        ops::mlock_slice(t.scales);
         t
     }
 

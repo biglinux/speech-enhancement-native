@@ -1,53 +1,30 @@
-//! The behaviour every DeepFilterNet3 plugin shows, through its LADSPA descriptor as
+//! The behavior every DeepFilterNet3 plugin shows, through its LADSPA descriptor as
 //! a host drives it, and of its bare engine. Each plugin crate's
 //! `tests/conformance.rs` includes this module next to its `Net`, `DESCRIPTOR` and
 //! `ENGINE_DELAY`. (Both plugins cannot share one test binary: each exports
 //! `ladspa_descriptor`.)
-use std::os::raw::{c_char, c_ulong, c_void};
+use std::os::raw::c_ulong;
 
-use super::{Net, DESCRIPTOR, ENGINE_DELAY};
-use dfn3_plugin::{Denoiser, HOP};
+use super::{DESCRIPTOR, ENGINE_DELAY, Net};
+#[path = "../../../../testdata/heap_calls.rs"]
+mod heap_calls;
+use dfn3_plugin::ladspa::{Descriptor, Handle};
+use dfn3_plugin::{Denoiser, HOP, SILENCE_SKIP_MAX};
+use heap_calls::heap_calls;
 use silero_vad::VoiceGate;
 
-type Handle = *mut c_void;
-
-/// The LADSPA 1.1 descriptor layout, as a host sees it.
-#[repr(C)]
-struct Desc {
-    unique_id: c_ulong,
-    label: *const c_char,
-    properties: i32,
-    name: *const c_char,
-    maker: *const c_char,
-    copyright: *const c_char,
-    port_count: c_ulong,
-    port_descriptors: *const i32,
-    port_names: *const *const c_char,
-    port_range_hints: *const c_void,
-    implementation_data: *mut c_void,
-    instantiate: Option<extern "C" fn(*const Desc, c_ulong) -> Handle>,
-    connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
-    activate: Option<extern "C" fn(Handle)>,
-    run: Option<extern "C" fn(Handle, c_ulong)>,
-    run_adding: Option<extern "C" fn(Handle, c_ulong)>,
-    set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
-    deactivate: Option<extern "C" fn(Handle)>,
-    cleanup: Option<extern "C" fn(Handle)>,
-}
-
 const ATTEN: c_ulong = 2;
+const MIN_DB: c_ulong = 3;
+const MAX_DB_ERB: c_ulong = 4;
+const MAX_DB_DF: c_ulong = 5;
 const DEPTH: c_ulong = 6;
 const POST_FILTER: c_ulong = 7;
 const STARTUP_MS: c_ulong = 8;
 const VOICE_GATE: c_ulong = 19;
+const LATENCY: c_ulong = 20;
 const GATE_ON: (c_ulong, f32) = (VOICE_GATE, 40.0);
 const GATE_OFF: (c_ulong, f32) = (VOICE_GATE, 0.0);
 const NO_STARTUP_MUTE: (c_ulong, f32) = (STARTUP_MS, 0.0);
-
-fn desc() -> &'static Desc {
-    // SAFETY: `Desc` mirrors the repr(C) descriptor layout.
-    unsafe { &*(&DESCRIPTOR as *const _ as *const Desc) }
-}
 
 /// The bare engine over `input` in hops, with default settings.
 fn engine(input: &[f32]) -> Vec<f32> {
@@ -104,7 +81,7 @@ fn noisy_speech() -> Vec<f32> {
 
 /// A running plugin instance with the given controls connected.
 struct Run {
-    d: &'static Desc,
+    d: &'static Descriptor,
     h: Handle,
     // Boxed so the host-side storage stays put while connected.
     controls: Box<[f32]>,
@@ -112,7 +89,7 @@ struct Run {
 
 impl Run {
     fn new(controls: &[(c_ulong, f32)]) -> Self {
-        let d = desc();
+        let d = &DESCRIPTOR;
         let h = (d.instantiate.unwrap())(d, 48000);
         assert!(!h.is_null());
         let mut values: Box<[f32]> = controls.iter().map(|&(_, v)| v).collect();
@@ -169,7 +146,7 @@ fn run_with(controls: &[(c_ulong, f32)], input: &[f32]) -> Vec<f32> {
 
 #[test]
 fn rates_other_than_48k_are_rejected() {
-    let d = desc();
+    let d = &DESCRIPTOR;
     assert!((d.instantiate.unwrap())(d, 44100).is_null());
 }
 
@@ -236,7 +213,7 @@ fn every_control_port_tolerates_non_finite_values() {
         f32::INFINITY,
         f32::NEG_INFINITY,
     ] {
-        let controls: Vec<_> = (2..desc().port_count).map(|port| (port, v)).collect();
+        let controls: Vec<_> = (2..DESCRIPTOR.port_count).map(|port| (port, v)).collect();
         let out = run_with(&controls, &input[..48000 * 2]);
         assert!(out.iter().all(|y| y.is_finite()), "controls {v}");
     }
@@ -256,19 +233,22 @@ fn a_non_finite_voice_gate_depth_mid_stream_keeps_the_output_finite() {
 }
 
 #[test]
-fn non_finite_input_is_heard_as_silence() {
+fn non_finite_and_huge_input_do_not_poison_the_state() {
     let mut input = noisy_speech();
     input[48_000 * 2 + 7] = f32::NAN;
     input[48_000 * 3] = f32::INFINITY;
+    input[48_000 * 3 + 1] = 1e30;
     for gate in [GATE_OFF, GATE_ON] {
         let run = Run::new(&[gate]);
         run.activate();
         let out = run.process(&input, 480, true);
         assert!(out.iter().all(|v| v.is_finite()), "gate {}", gate.1);
         // The speech after it still passes: the state was not poisoned.
-        assert!(out[48_000 * 3 + 9_600..48_000 * 4]
-            .iter()
-            .any(|v| v.abs() > 0.01));
+        assert!(
+            out[48_000 * 3 + 9_600..48_000 * 4]
+                .iter()
+                .any(|v| v.abs() > 0.01)
+        );
     }
 }
 
@@ -326,14 +306,17 @@ fn lag(input: &[f32], output: &[f32]) -> usize {
 }
 
 #[test]
-fn the_delay_is_the_engine_delay_and_the_voice_gate_raises_it_to_its_lag() {
+fn the_latency_port_reports_the_delay_the_voice_gate_raises_to_its_lag() {
     // Attenuation 0 passes the input through the analysis and synthesis unchanged,
     // so the correlation peak is the delay.
     let input = lcg_noise(48_000 * 3, 0.2);
-    let off = run_with(&[(ATTEN, 0.0), NO_STARTUP_MUTE, GATE_OFF], &input);
-    assert_eq!(lag(&input, &off), ENGINE_DELAY);
-    let on = run_with(&[(ATTEN, 0.0), NO_STARTUP_MUTE, GATE_ON], &input);
-    assert_eq!(lag(&input, &on), VoiceGate::LAG);
+    for (gate, delay) in [(GATE_OFF, ENGINE_DELAY), (GATE_ON, VoiceGate::LAG)] {
+        let run = Run::new(&[(ATTEN, 0.0), NO_STARTUP_MUTE, gate, (LATENCY, -1.0)]);
+        run.activate();
+        let out = run.process(&input, 480, false);
+        assert_eq!(lag(&input, &out), delay, "gate {}", gate.1);
+        assert_eq!(run.controls[3], delay as f32, "gate {}", gate.1);
+    }
 }
 
 #[test]
@@ -362,9 +345,7 @@ fn the_engine_output_is_finite() {
     let mut e = Denoiser::<Net>::new();
     let mut out = [0.0f32; HOP];
     for f in 0..80 {
-        let inp: Vec<f32> = (0..HOP)
-            .map(|i| 0.2 * ((f * HOP + i) as f32 * 0.05).sin())
-            .collect();
+        let inp: [f32; HOP] = std::array::from_fn(|i| 0.2 * ((f * HOP + i) as f32 * 0.05).sin());
         e.process(&inp, &mut out);
         assert!(out.iter().all(|v| v.is_finite()), "non-finite at frame {f}");
     }
@@ -377,7 +358,7 @@ fn the_engine_suppresses_stationary_noise() {
     let mut seed = 12345u32;
     let (mut in_e, mut out_e) = (0.0f64, 0.0f64);
     for f in 0..300 {
-        let inp: Vec<f32> = (0..HOP).map(|_| 0.05 * lcg(&mut seed)).collect();
+        let inp: [f32; HOP] = std::array::from_fn(|_| 0.05 * lcg(&mut seed));
         e.process(&inp, &mut out);
         if f > 30 {
             in_e += inp.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
@@ -385,24 +366,6 @@ fn the_engine_suppresses_stationary_noise() {
         }
     }
     assert!(out_e < in_e * 0.5, "in {in_e:.3}, out {out_e:.3}");
-}
-
-#[test]
-fn the_engine_is_deterministic() {
-    let run = || {
-        let mut e = Denoiser::<Net>::new();
-        let mut out = [0.0f32; HOP];
-        let mut acc = Vec::new();
-        for f in 0..40 {
-            let inp: Vec<f32> = (0..HOP)
-                .map(|i| 0.15 * ((f * HOP + i) as f32 * 0.03).sin())
-                .collect();
-            e.process(&inp, &mut out);
-            acc.extend_from_slice(&out);
-        }
-        acc
-    };
-    assert_eq!(run(), run());
 }
 
 #[test]
@@ -443,4 +406,130 @@ fn speech_passes_again_after_long_noise_and_silence() {
     assert!(burst > 0.1, "a short utterance was muted: {burst}");
     let resumed = energy(&mut e, hops);
     assert!(resumed > 1.0, "speech did not resume: {resumed}");
+}
+
+#[test]
+fn digital_silence_skips_the_network_and_speech_resumes_at_once() {
+    let speech = speech();
+    let hops = speech.as_chunks::<HOP>().0;
+    let mut e = Denoiser::<Net>::new();
+    let mut out = [0.0; HOP];
+    for frame in &hops[..100] {
+        e.process(frame, &mut out);
+    }
+    for k in 0..SILENCE_SKIP_MAX + 100 {
+        e.process(&[0.0; HOP], &mut out);
+        // Past the skip threshold the network does not run: its LSNR is the floor.
+        if k >= SILENCE_SKIP_MAX {
+            assert_eq!(e.lsnr, -15.0, "hop {k} ran the network");
+            assert!(out.iter().all(|&v| v == 0.0));
+        }
+    }
+    let mut energy = 0.0;
+    for frame in &hops[100..150] {
+        e.process(frame, &mut out);
+        energy += out.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>();
+    }
+    assert!(energy > 0.1, "speech after silence was muted: {energy}");
+}
+
+/// Golden regression: the engine output on a fixed input must stay within 60 dB SDR
+/// of `tests/fixtures/golden.bin`, this pipeline's own output. The thresholds run
+/// every stage on every hop; 60 dB absorbs the FMA difference between SIMD tiers
+/// and catches any real numeric regression, which lands far below.
+///
+/// After an intentional numeric change, regenerate the fixture with
+/// `BLESS=1 cargo test --test conformance golden` and review the result.
+#[test]
+fn golden_output_matches_reference() {
+    const NFRAMES: usize = 80;
+    let mut seed = 1234u32;
+    let input: Vec<f32> = (0..NFRAMES * HOP)
+        .map(|i| {
+            0.2 * (i as f32 * 0.02).sin() + 0.3 * (i as f32 * 0.005).sin() + 0.05 * lcg(&mut seed)
+        })
+        .collect();
+    let mut e = Denoiser::<Net>::new();
+    e.min_db = -100.0;
+    e.max_db_erb = 100.0;
+    e.max_db_df = 100.0;
+    let mut out = vec![0.0f32; NFRAMES * HOP];
+    for (x, y) in input
+        .as_chunks::<HOP>()
+        .0
+        .iter()
+        .zip(out.as_chunks_mut::<HOP>().0)
+    {
+        e.process(x, y);
+    }
+    assert!(out.iter().all(|v| v.is_finite()), "non-finite output");
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/golden.bin");
+    if std::env::var_os("BLESS").is_some() {
+        let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(path, bytes).expect("write the golden fixture");
+        return;
+    }
+    let bytes = std::fs::read(path).expect("golden fixture missing; run once with BLESS=1");
+    let reference: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
+        .collect();
+    assert_eq!(out.len(), reference.len(), "length changed");
+    let (mut sig, mut err) = (0.0f64, 0.0f64);
+    for (o, r) in out.iter().zip(&reference) {
+        sig += f64::from(*r).powi(2);
+        err += f64::from(o - r).powi(2);
+    }
+    let sdr = 10.0 * (sig / err.max(1e-30)).log10();
+    assert!(sdr > 60.0, "golden SDR {sdr:.1} dB is below 60 dB");
+}
+
+#[test]
+fn run_never_allocates() {
+    let input = noisy_speech();
+    for block in [1usize, 480, 1024, 16384] {
+        for gate in [GATE_OFF, GATE_ON] {
+            let run = Run::new(&[gate, (DEPTH, 20.0), (LATENCY, 0.0)]);
+            run.activate();
+            let (connect, plugin_run) = (run.d.connect_port.unwrap(), run.d.run.unwrap());
+            let mut buf = vec![0.0f32; block];
+            connect(run.h, 0, buf.as_mut_ptr());
+            connect(run.h, 1, buf.as_mut_ptr());
+            let mut calls = 0;
+            for piece in input.chunks(block) {
+                buf[..piece.len()].copy_from_slice(piece);
+                calls += heap_calls(|| plugin_run(run.h, piece.len() as c_ulong));
+            }
+            assert_eq!(calls, 0, "block {block}, gate {}", gate.1);
+        }
+    }
+}
+
+/// The value a host that applies the hints starts a control at.
+fn hint_default(port: c_ulong) -> f32 {
+    // SAFETY: `port_range_hints` has `port_count` entries.
+    let h = unsafe { *DESCRIPTOR.port_range_hints.add(port as usize) };
+    let (l, u) = (h.lower, h.upper);
+    match h.hint_descriptor & 0x3C0 {
+        0x40 => l,
+        0x80 => 0.75 * l + 0.25 * u,
+        0xC0 => 0.5 * l + 0.5 * u,
+        0x100 => 0.25 * l + 0.75 * u,
+        0x140 => u,
+        other => panic!("port {port}: default hint {other:#x}"),
+    }
+}
+
+#[test]
+fn the_engine_defaults_are_the_port_defaults() {
+    // A host that leaves a control unconnected gets the engine's value, one that
+    // applies the hints gets the hint's: both must be the same setting.
+    let e = Denoiser::<Net>::new();
+    assert_eq!(e.min_db, hint_default(MIN_DB));
+    assert_eq!(e.max_db_erb, hint_default(MAX_DB_ERB));
+    assert_eq!(e.max_db_df, hint_default(MAX_DB_DF));
+    assert_eq!(e.post_filter_beta, hint_default(POST_FILTER));
 }

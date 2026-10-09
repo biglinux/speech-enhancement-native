@@ -176,3 +176,34 @@ pub fn convert(raw: &[u8], g: Geometry) -> Result<Vec<u8>, String> {
     }
     Ok(b)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_and_header_validation() {
+        for g in [Geometry::DFN3, Geometry::DFN3LL] {
+            let raw: Vec<u8> = (0..g.raw_len()).map(|i| (i * 79 % 256) as u8).collect();
+            let packed = convert(&raw, g).unwrap();
+            let s = sections(&packed, g).unwrap();
+            let old = sections(&raw, g).unwrap();
+            assert_eq!(&packed[s.f], &raw[old.f]);
+            assert_eq!(&packed[s.s], &raw[old.s]);
+            for m in 0..g.matrices() {
+                let k = m * g.matrix_len();
+                let u = unpack_matrix(
+                    &packed[s.i.start + k..s.i.start + k + g.matrix_len()],
+                    3 * g.hidden,
+                    g.hidden,
+                )
+                .unwrap();
+                assert_eq!(u, raw[old.i.start + k..old.i.start + k + g.matrix_len()]);
+            }
+            let mut broken = packed.clone();
+            broken[16] ^= 1;
+            assert!(sections(&broken, g).is_err());
+            assert!(sections(&packed[..packed.len() - 1], g).is_err());
+        }
+    }
+}

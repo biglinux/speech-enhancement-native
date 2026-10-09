@@ -17,7 +17,7 @@ use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
-pub use dfn_ops::atten_lim_from_db;
+pub use ops::atten_lim_from_db;
 pub use weights::{AlignedBlob, Tensors};
 
 pub const SR: usize = 48000;
@@ -38,8 +38,11 @@ pub const ERB_WIDTHS: [usize; NB_ERB] = [
 
 const LSNR_MAX: f32 = 35.0;
 const LSNR_MIN: f32 = -15.0;
-const SILENCE_RMS: f32 = 1e-7;
-const SILENCE_SKIP_MAX: i32 = 5;
+/// Mean-square level below which a hop is silence (about -70 dBFS RMS).
+const SILENCE_MEAN_SQUARE: f32 = 1e-7;
+/// Silent hops still processed before the rest are skipped (2 s), so the
+/// recurrent state settles before it freezes.
+pub const SILENCE_SKIP_MAX: u32 = 200;
 /// With the deep filter on, the ERB mask only covers the bands above its bins.
 const ERB_DF_SKIP_BAND: usize = 21;
 const ERB_DF_SKIP_OFFSET: usize = 93;
@@ -65,7 +68,7 @@ pub trait Network {
 
 /// The local SNR estimate the encoder's `lsnr_fc` head maps to dB.
 pub fn lsnr(emb: &[f32], w: &[f32], b: f32) -> f32 {
-    dfn_ops::sigmoid(b + dfn_ops::vdot(emb, w)) * (LSNR_MAX - LSNR_MIN) + LSNR_MIN
+    ops::sigmoid(b + ops::vdot(emb, w)) * (LSNR_MAX - LSNR_MIN) + LSNR_MIN
 }
 
 /// A streaming denoiser: 480 samples in, 480 out per [`Denoiser::process`] call.
@@ -104,7 +107,8 @@ pub struct Denoiser<N> {
     coefs_t: Vec<f32>,
     enh_re: Vec<f32>,
     enh_im: Vec<f32>,
-    silence: i32,
+    /// Consecutive silent input hops.
+    silence: u32,
 
     /// Local SNR estimate of the last hop (dB).
     pub lsnr: f32,
@@ -194,8 +198,8 @@ impl<N: Network> Denoiser<N> {
             atten_lim: 0.0,
             post_filter_beta: 0.0,
             min_db: -10.0,
-            max_db_erb: 30.0,
-            max_db_df: 20.0,
+            max_db_erb: 40.0,
+            max_db_df: 40.0,
         }
     }
 
@@ -208,12 +212,12 @@ impl<N: Network> Denoiser<N> {
         (self.x_head + logical) % Self::SPEC_X
     }
 
-    fn frame_analysis(&mut self, input: &[f32]) {
+    fn frame_analysis(&mut self, input: &[f32; HOP]) {
         for i in 0..HOP {
             self.fft_r[i] = self.analysis_mem[i] * self.window[i];
             self.fft_r[HOP + i] = input[i] * self.window[HOP + i];
         }
-        self.analysis_mem[..HOP].copy_from_slice(&input[..HOP]);
+        self.analysis_mem.copy_from_slice(input);
         self.r2c
             .process_with_scratch(&mut self.fft_r, &mut self.fft_c, &mut self.r2c_scratch)
             .expect("rfft");
@@ -223,7 +227,7 @@ impl<N: Network> Denoiser<N> {
         }
     }
 
-    fn frame_synthesis(&mut self, out: &mut [f32], enh_re: &[f32], enh_im: &[f32]) {
+    fn frame_synthesis(&mut self, out: &mut [f32; HOP], enh_re: &[f32], enh_im: &[f32]) {
         for i in 0..FREQ {
             self.fft_c[i] = Complex32::new(enh_re[i], enh_im[i]);
         }
@@ -289,15 +293,17 @@ impl<N: Network> Denoiser<N> {
         }
     }
 
-    pub fn process(&mut self, input: &[f32], out: &mut [f32]) {
-        let e: f32 = input[..HOP].iter().map(|v| v * v).sum();
-        if e / (HOP as f32) < SILENCE_RMS {
-            self.silence += 1;
+    /// Denoises one hop. The output lags the input by `FFT - HOP` samples plus
+    /// `N::LOOKAHEAD` hops.
+    pub fn process(&mut self, input: &[f32; HOP], out: &mut [f32; HOP]) {
+        let e: f32 = input.iter().map(|v| v * v).sum();
+        if e / (HOP as f32) < SILENCE_MEAN_SQUARE {
+            self.silence = self.silence.saturating_add(1);
         } else {
             self.silence = 0;
         }
         if self.silence > SILENCE_SKIP_MAX {
-            out[..HOP].fill(0.0);
+            out.fill(0.0);
             self.lsnr = LSNR_MIN;
             self.band_db = [BAND_DB_FLOOR; NB_ERB];
             return;
@@ -370,9 +376,6 @@ impl<N: Network> Denoiser<N> {
                     }
                     off += bw;
                 }
-                self.silence = 0;
-            } else {
-                self.silence += 1;
             }
         }
 

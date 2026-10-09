@@ -1,10 +1,10 @@
 //! Mono 48 kHz streaming adapter. Arbitrary host block sizes, including in-place.
 //! Two-hop framing delay + four-hop model delay = 2880 samples (60 ms).
 use crate::{
-    model::{Model, BINS, FFT, HOP, MODEL_DELAY},
     Bundle, Result,
+    model::{BINS, FFT, HOP, MODEL_DELAY, Model},
 };
-use realfft::{num_complex::Complex32, ComplexToReal, RealFftPlanner, RealToComplex};
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex, num_complex::Complex32};
 use std::sync::Arc;
 pub const LATENCY: usize = (2 + MODEL_DELAY) * HOP;
 
@@ -89,7 +89,8 @@ impl Synthesis {
         s.complex.fill(Complex32::new(0.0, 0.0));
         Ok(s)
     }
-    /// Writes the next output hop; false if the transform failed or the result is not finite.
+    /// Writes the next output hop; false if the transform failed or the result is
+    /// not finite, which also catches a non-finite spectrum.
     pub(crate) fn run(&mut self, spec: &[f32], hop: &mut [f32]) -> bool {
         for (o, x) in self.complex.iter_mut().zip(spec.as_chunks::<2>().0) {
             o.re = x[0];
@@ -127,7 +128,12 @@ pub(crate) fn bounded_input(x: f32) -> f32 {
     }
 }
 
+/// The streaming engine behind the plugin: 48 kHz mono in, the enhanced signal
+/// `LATENCY` samples later out, for any block size.
 pub struct AudioProcessor {
+    // Keeps the weights alive while this instance uses them, which is what lets
+    // the plugin share one bundle between instances.
+    _bundle: Arc<Bundle>,
     pub(crate) model: Model,
     analysis: Analysis,
     synthesis: Synthesis,
@@ -138,6 +144,8 @@ pub struct AudioProcessor {
     target_mix: f32,
     last_control: f32,
     mix_step: f32,
+    /// The next control applies at once instead of ramping: set by `new` and `reset`.
+    snap: bool,
     fault: bool,
 }
 impl AudioProcessor {
@@ -146,6 +154,7 @@ impl AudioProcessor {
         let analysis = Analysis::new(&model.window)?;
         let synthesis = Synthesis::new(&model.window)?;
         Ok(Self {
+            _bundle: bundle,
             model,
             analysis,
             synthesis,
@@ -156,6 +165,7 @@ impl AudioProcessor {
             target_mix: 0.0,
             last_control: 100.0,
             mix_step: 1.0 / 5.0,
+            snap: true,
             fault: false,
         })
     }
@@ -164,7 +174,9 @@ impl AudioProcessor {
     pub(crate) fn into_parts(self) -> (Analysis, Model, Synthesis, f32) {
         (self.analysis, self.model, self.synthesis, self.dry_mix)
     }
-    /// dB range 0..100, non-finite => full enhancement. Ramped over at most five hops.
+    /// Noise attenuation in dB: 0 keeps the input, 100 or a non-finite value is
+    /// full enhancement. A change ramps over at most five hops, except the first
+    /// control after `new` or `reset`, which applies at once.
     pub fn set_attenuation_db(&mut self, db: f32) {
         let db = if db.is_finite() {
             db.clamp(0.0, 100.0)
@@ -172,10 +184,15 @@ impl AudioProcessor {
             100.0
         };
         if db != self.last_control {
-            self.target_mix = dpdfnet_ops::atten_lim_from_db(db);
+            self.target_mix = ops::atten_lim_from_db(db);
             self.last_control = db;
         }
+        if self.snap {
+            self.dry_mix = self.target_mix;
+            self.snap = false;
+        }
     }
+    /// Clears the stream state and a latched fault, as LADSPA `activate` does.
     pub fn reset(&mut self) {
         self.model.reset();
         self.analysis.history.fill(0.0);
@@ -184,8 +201,10 @@ impl AudioProcessor {
         self.pending_out.fill(0.0);
         self.position = 0;
         self.dry_mix = self.target_mix;
+        self.snap = true;
         self.fault = false;
     }
+    /// Whether a fault silenced the output until the next `reset`.
     pub fn faulted(&self) -> bool {
         self.fault
     }
@@ -194,9 +213,12 @@ impl AudioProcessor {
         self.fault = true;
         self.pending_out.fill(0.0);
     }
-    /// One sample in/out is intentional: block partition invariance without queues or growth paths.
+    /// One sample in, one out: any block partition gives the same output, with no
+    /// queues to grow. The caller sets FTZ/DAZ, as `process` does, to get the
+    /// plugin's bits.
     #[inline]
     pub fn sample(&mut self, x: f32) -> f32 {
+        // `Synthesis::run` only emits finite hops, and a fault zeroes them.
         let y = self.pending_out[self.position];
         self.pending_in[self.position] = bounded_input(x);
         self.position += 1;
@@ -204,17 +226,15 @@ impl AudioProcessor {
             self.position = 0;
             self.process_hop();
         }
-        if self.fault {
-            0.0
-        } else if y.is_finite() {
-            y
-        } else {
-            self.fault = true;
-            0.0
-        }
+        if self.fault { 0.0 } else { y }
     }
+    /// Processes a block under the plugin's FTZ/DAZ setting.
+    ///
+    /// # Panics
+    /// If `input` and `output` differ in length.
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
         assert_eq!(input.len(), output.len());
+        let _denormals = ops::DenormalGuard::new();
         for (y, &x) in output.iter_mut().zip(input) {
             *y = self.sample(x);
         }
@@ -233,6 +253,25 @@ impl AudioProcessor {
         };
         self.dry_mix += (self.target_mix - self.dry_mix).clamp(-self.mix_step, self.mix_step);
         let spec = self.model.process_spectrum(spectrum, self.dry_mix);
-        !spec.iter().any(|v| !v.is_finite()) && self.synthesis.run(spec, &mut self.pending_out)
+        self.synthesis.run(spec, &mut self.pending_out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The plugin's order: activate resets, then run reads the control. The mix
+    // must land on the control exactly, as in the offline pipeline, rather than
+    // ramp down from the previous control and stop an ulp away.
+    #[test]
+    fn the_first_control_after_reset_applies_exactly() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/model/dpdfnet2_48khz_hr-w8a16");
+        let mut p = AudioProcessor::new(Bundle::open(dir).unwrap()).unwrap();
+        p.set_attenuation_db(0.0);
+        p.process(&[0.1; 2 * HOP], &mut [0.0; 2 * HOP]);
+        p.reset();
+        p.set_attenuation_db(48.0);
+        assert_eq!(p.dry_mix.to_bits(), ops::atten_lim_from_db(48.0).to_bits());
     }
 }

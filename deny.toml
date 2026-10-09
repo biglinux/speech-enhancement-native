@@ -1,6 +1,3 @@
-# cargo-deny — policy: advisories (CVEs), licenses, bans, sources.
-# Run: cargo deny check
-
 [graph]
 all-features = true
 
@@ -11,22 +8,9 @@ ignore = []
 
 [licenses]
 version = 2
-# This project is MIT OR Apache-2.0 (permissive). Dependencies must be
-# permissive-compatible: no GPL/other whole-work copyleft, which would force the
-# combined work under those terms. MPL-2.0 is file-level copyleft and is fine.
-allow = [
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "CC0-1.0",
-    "ISC",
-    "MIT",
-    "MPL-2.0",
-    "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "Zlib",
-]
+# Only the permissive licenses the dependency tree uses today; a new license
+# fails the check until it is reviewed and added here.
+allow = ["Apache-2.0", "MIT"]
 confidence-threshold = 0.8
 
 [bans]

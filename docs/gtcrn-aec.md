@@ -33,8 +33,8 @@ near-end quality matters.
 
 - STFT and iSTFT, n_fft 512, hop 256, 257 bins at 16 kHz. The model stores them
   as DFT matrices with the window baked in; at load they are checked to be a
-  sine-windowed real DFT and replaced by `realfft` (the matrix path remains for
-  any other model).
+  sine-windowed real DFT, which the streaming path runs with `realfft`. A model
+  whose matrices are anything else is rejected.
 - ERB sub-bands: the upper 192 bins are merged into 64 bands and split back.
 - Encoder of five convolution blocks; blocks 2–4 are GTConv (pointwise, PReLU,
   depthwise 3×3, pointwise, temporal GRU attention), dilations 1, 2, 5.
@@ -44,7 +44,10 @@ near-end quality matters.
 - DAF front end: a GCC-PHAT estimate of the bulk delay (up to 1 s, refined
   every 0.5 s and locked once confident, after at least 3.5 s of audio), then a
   partitioned frequency-domain Kalman filter steered by small GRUs, which
-  removes the linear echo before the network.
+  removes the linear echo before the network. Once locked, the delay is not
+  estimated again, as in LocalVQE: if the echo path's bulk delay later changes
+  (another output device, for instance), the Kalman filter's 1 s span absorbs
+  what it can until a numeric fault makes the DAF re-acquire the delay.
 
 One GCC-PHAT observation costs three 32768-point FFTs, about 1 ms. In the
 streaming path it runs as 73 steps of similar size, four per 128-sample DAF
@@ -60,13 +63,14 @@ The GRUs stay f32. Together they are about 5% of the time; int8 would save about
 
 `module-echo-cancel` loads it with `library.name = aec/libspa-aec-gtcrn`.
 
-- Streams: the capture, playback and output streams must all be mono, 48 kHz,
-  planar f32 (`F32P`); `init`/`init2` return `-EINVAL` otherwise. The plugin
+- Streams: the capture, playback and output streams must all be 48 kHz planar
+  f32 (`F32P`); `init`/`init2` return `-EINVAL` otherwise. `init2` sets each
+  stream to mono, and `module-echo-cancel` adopts that, so its stereo default
+  needs no configuration; `init`, which older hosts call, requires mono. The plugin
   asks for blocks of 768 samples (`768/48000`) but accepts any block size,
   and the output is the same sample for sample whatever the block size:
   every decision happens on the pipeline's own hop and block boundaries.
-- Properties: `gtcrn.model` sets the model path (the `AEC_GTCRN_MODEL`
-  environment variable is the fallback), default
+- Properties: `gtcrn.model` sets the model path, default
   `/usr/share/gtcrn-aec-native/localvqe-pi-aec-v1-49k-f32.gguf`. A model that
   cannot be read or does not match the shipped model's tensors fails `init`
   with a message on stderr (the PipeWire log) and `-ENOENT`, `-EACCES` or
@@ -74,8 +78,10 @@ The GRUs stay f32. Together they are about 5% of the time; int8 would save about
 - Bands: up to 8 kHz the signal is resampled to 16 kHz and goes through the
   network in 256-sample hops, buffered through FIFOs. Above 8 kHz, which the
   network never sees, a linear partitioned frequency-domain adaptive filter
-  (`aec-gtcrn/src/hbaec.rs`) cancels echo from the loopback reference, and the
-  result is added back.
+  (`gtcrn-aec/src/hbaec.rs`) cancels echo from the loopback reference, and the
+  result is added back. Its overlap-save constraint visits one of the 64
+  partitions per block, which keeps the adapting filter at about 2% of an
+  i5-13400 core.
 - High-band duck: each hop's output-to-input amplitude ratio of the low band
   drives the high band's gain, fully off at 0.15 or below and fully on at 0.45
   or above, smoothed over about 10 ms. Strong suppression means far-end echo
@@ -94,7 +100,7 @@ The GRUs stay f32. Together they are about 5% of the time; int8 would save about
 
 `Engine::run`, `Streamer::process_hop` and the DAF allocate nothing after
 warm-up, also on the first call from a thread other than the one that built
-them, as on the PipeWire data thread (`aec-gtcrn/tests/rt_alloc.rs` and the
+them, as on the PipeWire data thread (`gtcrn-aec/tests/rt_alloc.rs` and the
 `rt_alloc_tests` in `spa-aec-gtcrn`).
 
 ## Latency
@@ -148,7 +154,7 @@ from the model: `schema_lists_the_shipped_model` fails and prints the new text
 when it is out of date. Offline run:
 
 ```sh
-cargo run --release -p aec-gtcrn --example aec_run -- \
+cargo run --release -p gtcrn-aec --example aec_run -- \
     gtcrn-aec/model/localvqe-pi-aec-v1-49k-f32.gguf mic.f32 ref.f32 out.f32
 ```
 

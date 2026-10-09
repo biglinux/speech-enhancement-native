@@ -27,7 +27,7 @@ q[i,j]   = round(w[i,j] / scale[i])   clamped to [-127, 127]
 ```
 
 Everything else (convolutions, grouped linears, biases) stays f32. At run time the
-product is exact in integers (`dfn_ops::gru_cell_packed`, `pmaddwd`):
+product is exact in integers (`ops::gru_cell_packed`, `pmaddwd`):
 
 ```
 y[i] = (Σ q[i,j] · xq[j]) · scale[i] · xscale

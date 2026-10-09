@@ -1,7 +1,7 @@
 //! The native network against the official ONNX model (`tools/reference.py`).
 
-use dfn_ops::resample::{Down3, LPF_DELAY};
-use silero_vad::{Silero, CHUNK};
+use ops::resample::{Down3, LPF_DELAY};
+use silero_vad::{CHUNK, Silero};
 
 const SECONDS: usize = 30;
 

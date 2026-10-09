@@ -1,0 +1,15 @@
+[package]
+name = "gtcrn-aec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "GTCRN-AEC neural echo canceller, ported from LocalVQE"
+publish.workspace = true
+
+[dependencies]
+ops = { path = "../../ops" }
+realfft = "3"
+
+[lints]
+workspace = true

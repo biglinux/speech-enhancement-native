@@ -4,22 +4,31 @@ members = [
     "deepfilternet3/dfn3-plugin",
     "deepfilternet3/dfn3-ladspa",
     "deepfilternet3/dfn3ll-ladspa",
-    "deepfilternet3/tools",
+    "deepfilternet3/dfn3-tools",
     "limiter-ladspa",
     "dpdfnet",
-    "dpdfnet/ops",
-    "gtcrn-aec/aec-gtcrn",
+    "gtcrn-aec/gtcrn-aec",
     "gtcrn-aec/spa-aec-gtcrn",
     "silero-vad",
 ]
 exclude = ["deepfilternet3/dfn3-ladspa/fuzz", "deepfilternet3/dfn3ll-ladspa/fuzz"]
-resolver = "2"
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-# Unwinding costs the GTCRN-AEC streaming path 37% on a Sandy Bridge i3.
+# Unwinding slows the GTCRN-AEC streaming path by 37% (docs/performance.md).
 panic = "abort"
 
 # DPDFNet catches initialization panics at the C ABI and reports a failed

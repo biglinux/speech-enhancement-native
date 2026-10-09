@@ -96,7 +96,7 @@ impl Linear {
         debug_assert_eq!(y.len(), self.output);
         let ip = self.input / self.groups;
         let op = self.output / self.groups;
-        dpdfnet_ops::grouped_linear(y, x, &self.w, self.groups, ip, op);
+        ops::grouped_linear(y, x, &self.w, self.groups, ip, op);
         self.act.apply_slice(y, Some(&self.b));
     }
 }
@@ -255,10 +255,10 @@ impl Conv {
         let ip = self.ci / self.groups;
         let op = self.co / self.groups;
         if self.kt == 1 && self.kf == 1 && self.pad == 0 && self.stride == 1 && self.groups == 1 {
-            // Resolve SIMD once per output position, rather than once per input channel.
+            // One matvec per output position resolves the SIMD tier once per position.
             for f in 0..of {
                 let y = &mut out[f * spacing + offset..f * spacing + offset + self.co];
-                dpdfnet_ops::matvec_t(y, &self.w, x.row(0, f), self.ci, self.co);
+                ops::matvec_t(y, &self.w, x.row(0, f), self.ci, self.co);
                 self.act.apply_slice(y, Some(&self.b));
             }
             return;
@@ -266,7 +266,7 @@ impl Conv {
         if self.kt == 1 && self.kf == 3 && self.groups == self.ci && self.ci == self.co {
             // Depthwise 3-tap over frequency: hold each channel-tile in registers across
             // the three taps (one store per position, not three read-modify-writes).
-            dpdfnet_ops::depthwise_1x3(
+            ops::depthwise_1x3(
                 out,
                 x.data,
                 &self.w,
@@ -302,10 +302,10 @@ impl Conv {
                             y[c] += xr[c] * self.w[base + c];
                         }
                     } else if op == 1 {
-                        // Final spectral mask: one SIMD dot per tap, not ci tiny AXPY calls.
+                        // Final spectral mask: one SIMD dot product per tap.
                         for (g, yg) in y.iter_mut().enumerate().take(self.groups) {
                             let start = g * ip;
-                            *yg += dpdfnet_ops::vdot_f32(
+                            *yg += ops::vdot_f32(
                                 &self.w[base + start..base + start + ip],
                                 &xr[start..start + ip],
                             );
@@ -324,7 +324,7 @@ impl Conv {
                                         yg[o] += wg[o] * a;
                                     }
                                 } else {
-                                    dpdfnet_ops::axpy_f32(yg, wg, xr[g * ip + i]);
+                                    ops::axpy_f32(yg, wg, xr[g * ip + i]);
                                 }
                             }
                         }
@@ -610,7 +610,7 @@ impl DprnnBlock {
     fn forward_reference(&mut self, x: &[f32]) -> &[f32] {
         let c = self.c;
         let gates = 3 * c;
-        // Intra-frequency recurrence starts from zero on EVERY frame, in BOTH directions.
+        // The intra-frequency recurrence starts from zero on every frame, in both directions.
         self.hf.fill(0.0);
         self.hb.fill(0.0);
         self.forward
@@ -674,9 +674,8 @@ impl DprnnBlock {
         }
         &self.out
     }
-    /// Same states/operations, less repeated preprocessing and smaller active
-    /// temporal working set. Spectral recurrence remains fully sequential in
-    /// each direction. There is no frame/silence skipping and no extra delay.
+    /// [`Self::forward_reference`] with the input projections batched and a smaller
+    /// working set. The spectral recurrence stays sequential in each direction.
     pub(crate) fn forward(&mut self, x: &[f32]) -> &[f32] {
         let c = self.c;
         let gates = 3 * c;
@@ -685,7 +684,7 @@ impl DprnnBlock {
         let shared = self.forward.input.is_quantized() && self.backward.input.is_quantized();
         if shared {
             for f in 0..self.f {
-                self.shared_scales[f] = dpdfnet_ops::quantize_i16(
+                self.shared_scales[f] = ops::quantize_i16(
                     &x[f * c..(f + 1) * c],
                     &mut self.shared_q[f * c..(f + 1) * c],
                 );
@@ -854,7 +853,7 @@ mod tests {
 #[cfg(test)]
 mod conv_tests {
     use super::*;
-    use crate::test_support::{assert_bits, Writer};
+    use crate::test_support::{Writer, assert_bits};
     #[test]
     fn specialized_convolutions_match_the_generic_path() {
         // Includes both input boundaries, all circular-buffer start positions,
@@ -935,7 +934,7 @@ mod conv_tests {
 #[cfg(test)]
 mod conv_shape_tests {
     use super::*;
-    use crate::test_support::{assert_bits, Writer};
+    use crate::test_support::{Writer, assert_bits};
     #[test]
     fn specialized_shapes_match_the_generic_path_for_strides_and_boundaries() {
         for (ci, co, kt, kf, groups) in [(1, 64, 3, 3, 1), (2, 64, 3, 3, 2), (64, 64, 1, 1, 64)] {
