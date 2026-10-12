@@ -39,14 +39,14 @@ pub struct Descriptor {
     pub port_names: *const *const c_char,
     pub port_range_hints: *const PortRangeHint,
     pub implementation_data: *mut c_void,
-    pub instantiate: Option<extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
-    pub connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
-    pub activate: Option<extern "C" fn(Handle)>,
-    pub run: Option<extern "C" fn(Handle, c_ulong)>,
-    pub run_adding: Option<extern "C" fn(Handle, c_ulong)>,
-    pub set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
-    pub deactivate: Option<extern "C" fn(Handle)>,
-    pub cleanup: Option<extern "C" fn(Handle)>,
+    pub instantiate: Option<unsafe extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
+    pub connect_port: Option<unsafe extern "C" fn(Handle, c_ulong, *mut f32)>,
+    pub activate: Option<unsafe extern "C" fn(Handle)>,
+    pub run: Option<unsafe extern "C" fn(Handle, c_ulong)>,
+    pub run_adding: Option<unsafe extern "C" fn(Handle, c_ulong)>,
+    pub set_run_adding_gain: Option<unsafe extern "C" fn(Handle, f32)>,
+    pub deactivate: Option<unsafe extern "C" fn(Handle)>,
+    pub cleanup: Option<unsafe extern "C" fn(Handle)>,
 }
 // SAFETY: immutable after construction; the pointers are to 'static data.
 unsafe impl Sync for Descriptor {}
@@ -338,7 +338,7 @@ extern "C" fn instantiate<N: Network>(_: *const Descriptor, sr: c_ulong) -> Hand
     Box::into_raw(Box::new(Instance::<N>::new())).cast()
 }
 
-extern "C" fn connect_port<N: Network>(h: Handle, port: c_ulong, data: *mut f32) {
+unsafe extern "C" fn connect_port<N: Network>(h: Handle, port: c_ulong, data: *mut f32) {
     // SAFETY: `h` is the Instance leaked by instantiate(), alive until cleanup().
     let inst = unsafe { &mut *h.cast::<Instance<N>>() };
     if let Some(p) = inst.ports.get_mut(port as usize) {
@@ -346,7 +346,7 @@ extern "C" fn connect_port<N: Network>(h: Handle, port: c_ulong, data: *mut f32)
     }
 }
 
-extern "C" fn activate<N: Network>(h: Handle) {
+unsafe extern "C" fn activate<N: Network>(h: Handle) {
     // SAFETY: `h` is the Instance leaked by instantiate(), alive until cleanup().
     let inst = unsafe { &mut *h.cast::<Instance<N>>() };
     // A new stream: everything but the port connections starts over.
@@ -355,7 +355,7 @@ extern "C" fn activate<N: Network>(h: Handle) {
     inst.ports = ports;
 }
 
-extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
+unsafe extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
     // SAFETY: `h` is the Instance leaked by instantiate(), alive until cleanup().
     let inst = unsafe { &mut *h.cast::<Instance<N>>() };
     let (input, output) = (inst.ports[IN], inst.ports[OUT]);
@@ -477,7 +477,7 @@ extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
     }
 }
 
-extern "C" fn cleanup<N: Network>(h: Handle) {
+unsafe extern "C" fn cleanup<N: Network>(h: Handle) {
     if !h.is_null() {
         // SAFETY: `h` is the Box leaked by instantiate(), reclaimed exactly once.
         unsafe { drop(Box::from_raw(h.cast::<Instance<N>>())) };

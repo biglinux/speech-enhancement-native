@@ -2,8 +2,11 @@
 
 pkgbase=speech-enhancement-native
 pkgname=(deepfilternet3-native dpdfnet-native gtcrn-aec-native)
-pkgver=$(date +%y.%m.%d)
-pkgrel=$(date +%H%M)
+# Read once: makepkg sources this file again in its fakeroot pass, minutes
+# later for this build, and both passes must name the same package.
+export BIG_PKGSTAMP="${BIG_PKGSTAMP:-$(date +%y.%m.%d-%H%M)}"
+pkgver=${BIG_PKGSTAMP%-*}
+pkgrel=${BIG_PKGSTAMP#*-}
 arch=('x86_64')
 url="https://github.com/biglinux/${pkgbase}"
 makedepends=('git' 'rust' 'libpipewire')

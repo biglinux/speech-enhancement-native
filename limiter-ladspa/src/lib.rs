@@ -149,14 +149,14 @@ pub struct Descriptor {
     port_names: *const *const c_char,
     port_range_hints: *const PortRangeHint,
     implementation_data: *mut c_void,
-    instantiate: Option<extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
-    connect_port: Option<extern "C" fn(Handle, c_ulong, *mut f32)>,
-    activate: Option<extern "C" fn(Handle)>,
-    run: Option<extern "C" fn(Handle, c_ulong)>,
-    run_adding: Option<extern "C" fn(Handle, c_ulong)>,
-    set_run_adding_gain: Option<extern "C" fn(Handle, f32)>,
-    deactivate: Option<extern "C" fn(Handle)>,
-    cleanup: Option<extern "C" fn(Handle)>,
+    instantiate: Option<unsafe extern "C" fn(*const Descriptor, c_ulong) -> Handle>,
+    connect_port: Option<unsafe extern "C" fn(Handle, c_ulong, *mut f32)>,
+    activate: Option<unsafe extern "C" fn(Handle)>,
+    run: Option<unsafe extern "C" fn(Handle, c_ulong)>,
+    run_adding: Option<unsafe extern "C" fn(Handle, c_ulong)>,
+    set_run_adding_gain: Option<unsafe extern "C" fn(Handle, f32)>,
+    deactivate: Option<unsafe extern "C" fn(Handle)>,
+    cleanup: Option<unsafe extern "C" fn(Handle)>,
 }
 // SAFETY: immutable after construction; the pointers are to 'static data.
 unsafe impl Sync for Descriptor {}
@@ -211,7 +211,7 @@ extern "C" fn instantiate(_d: *const Descriptor, sr: c_ulong) -> Handle {
     Box::into_raw(inst).cast()
 }
 
-extern "C" fn connect_port(h: Handle, port: c_ulong, data: *mut f32) {
+unsafe extern "C" fn connect_port(h: Handle, port: c_ulong, data: *mut f32) {
     if h.is_null() {
         return;
     }
@@ -227,7 +227,7 @@ extern "C" fn connect_port(h: Handle, port: c_ulong, data: *mut f32) {
     }
 }
 
-extern "C" fn run(h: Handle, n: c_ulong) {
+unsafe extern "C" fn run(h: Handle, n: c_ulong) {
     if h.is_null() {
         return;
     }
@@ -272,7 +272,7 @@ extern "C" fn run(h: Handle, n: c_ulong) {
     }
 }
 
-extern "C" fn activate(h: Handle) {
+unsafe extern "C" fn activate(h: Handle) {
     if h.is_null() {
         return;
     }
@@ -280,7 +280,7 @@ extern "C" fn activate(h: Handle) {
     unsafe { (*h.cast::<Instance>()).lim.reset() };
 }
 
-extern "C" fn cleanup(h: Handle) {
+unsafe extern "C" fn cleanup(h: Handle) {
     if !h.is_null() {
         // SAFETY: `h` is the Box leaked in instantiate(); reclaimed exactly once.
         unsafe { drop(Box::from_raw(h.cast::<Instance>())) };
@@ -372,11 +372,14 @@ mod tests {
             audio[10] = 0.5;
             let mut latency = -1.0f32;
             let h = instantiate(&DESCRIPTOR, sr);
-            connect_port(h, IN, audio.as_mut_ptr());
-            connect_port(h, OUT, audio.as_mut_ptr());
-            connect_port(h, LATENCY, &mut latency);
-            run(h, audio.len() as c_ulong);
-            cleanup(h);
+            // SAFETY: `h` lives until cleanup() and the ports outlive the run.
+            unsafe {
+                connect_port(h, IN, audio.as_mut_ptr());
+                connect_port(h, OUT, audio.as_mut_ptr());
+                connect_port(h, LATENCY, &mut latency);
+                run(h, audio.len() as c_ulong);
+                cleanup(h);
+            }
             let arrival = audio.iter().position(|&v| v != 0.0).unwrap();
             assert_eq!(arrival - 10, latency as usize, "{sr} Hz");
             // 3 ms at the host rate.
@@ -397,7 +400,8 @@ mod tests {
             assert_eq!(hint.hint_descriptor & 0x3C0, HINT_DEFAULT_HIGH);
             assert_eq!(value, 0.25 * hint.lower + 0.75 * hint.upper, "port {port}");
         }
-        cleanup(h);
+        // SAFETY: `h` came from instantiate() and is reclaimed once.
+        unsafe { cleanup(h) };
     }
 
     #[test]
@@ -494,10 +498,13 @@ mod tests {
         let mut actual = input;
         let handle = instantiate(&DESCRIPTOR, 48_000);
         assert!(!handle.is_null());
-        connect_port(handle, IN, actual.as_mut_ptr());
-        connect_port(handle, OUT, actual.as_mut_ptr());
-        run(handle, actual.len() as c_ulong);
-        cleanup(handle);
+        // SAFETY: `handle` lives until cleanup() and `actual` outlives the run.
+        unsafe {
+            connect_port(handle, IN, actual.as_mut_ptr());
+            connect_port(handle, OUT, actual.as_mut_ptr());
+            run(handle, actual.len() as c_ulong);
+            cleanup(handle);
+        }
         assert_eq!(actual, expected);
     }
 

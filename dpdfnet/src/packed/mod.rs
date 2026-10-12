@@ -183,8 +183,10 @@ pub(crate) fn widened_one(y: &mut [f32], w: &[i16], sw: &[f32], q: &[i16], sx: f
     assert_eq!(sw.len(), 192);
     assert_eq!(q.len(), 64);
     debug_assert!(q.iter().all(|&x| (-16383..=16383).contains(&x)));
-    // SAFETY: only Matrix::widen enables this path after AVX2 detection, and
-    // Bundle::widened_recurrent copies the validated int8 values.
+    // Tier 3 is AVX2 with FMA; a cached atomic load, beside 12288 products.
+    assert_eq!(ops::simd_tier(), 3, "the widened kernel needs AVX2");
+    // SAFETY: the assert above checked AVX2, and Bundle::widened_recurrent
+    // copies the validated int8 values.
     unsafe { widened::avx2_one(y, w, sw, q, sx) }
 }
 

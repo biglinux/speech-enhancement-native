@@ -90,11 +90,13 @@ struct Run {
 impl Run {
     fn new(controls: &[(c_ulong, f32)]) -> Self {
         let d = &DESCRIPTOR;
-        let h = (d.instantiate.unwrap())(d, 48000);
+        // SAFETY: instantiate() takes no pointer it reads.
+        let h = unsafe { (d.instantiate.unwrap())(d, 48000) };
         assert!(!h.is_null());
         let mut values: Box<[f32]> = controls.iter().map(|&(_, v)| v).collect();
         for (k, &(port, _)) in controls.iter().enumerate() {
-            (d.connect_port.unwrap())(h, port, values[k..].as_mut_ptr());
+            // SAFETY: `h` is live, and the boxed controls stay put while it is.
+            unsafe { (d.connect_port.unwrap())(h, port, values[k..].as_mut_ptr()) };
         }
         Self {
             d,
@@ -104,7 +106,8 @@ impl Run {
     }
 
     fn activate(&self) {
-        (self.d.activate.unwrap())(self.h);
+        // SAFETY: `h` is live until drop.
+        unsafe { (self.d.activate.unwrap())(self.h) };
     }
 
     /// Runs `input` in blocks of `block` through separate input and output buffers,
@@ -113,17 +116,21 @@ impl Run {
         let (connect, run) = (self.d.connect_port.unwrap(), self.d.run.unwrap());
         let mut inbuf = vec![0.0f32; block];
         let mut outbuf = vec![0.0f32; block];
-        connect(self.h, 0, inbuf.as_mut_ptr());
         let out_ptr = if in_place {
             inbuf.as_mut_ptr()
         } else {
             outbuf.as_mut_ptr()
         };
-        connect(self.h, 1, out_ptr);
+        // SAFETY: `h` is live; both buffers hold `block` samples and outlive the runs.
+        unsafe {
+            connect(self.h, 0, inbuf.as_mut_ptr());
+            connect(self.h, 1, out_ptr);
+        }
         let mut out = Vec::with_capacity(input.len());
         for piece in input.chunks(block) {
             inbuf[..piece.len()].copy_from_slice(piece);
-            run(self.h, piece.len() as c_ulong);
+            // SAFETY: as above, and `piece` is at most `block` long.
+            unsafe { run(self.h, piece.len() as c_ulong) };
             let result = if in_place { &inbuf } else { &outbuf };
             out.extend_from_slice(&result[..piece.len()]);
         }
@@ -133,7 +140,8 @@ impl Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        (self.d.cleanup.unwrap())(self.h);
+        // SAFETY: `h` came from instantiate() and is reclaimed once, here.
+        unsafe { (self.d.cleanup.unwrap())(self.h) };
     }
 }
 
@@ -147,7 +155,8 @@ fn run_with(controls: &[(c_ulong, f32)], input: &[f32]) -> Vec<f32> {
 #[test]
 fn rates_other_than_48k_are_rejected() {
     let d = &DESCRIPTOR;
-    assert!((d.instantiate.unwrap())(d, 44100).is_null());
+    // SAFETY: instantiate() takes no pointer it reads.
+    assert!(unsafe { (d.instantiate.unwrap())(d, 44100) }.is_null());
 }
 
 #[test]
@@ -264,7 +273,8 @@ fn reactivation_restarts_the_stream_and_reapplies_unchanged_controls() {
         run.activate();
         let first = run.process(&input, 480, false);
         if let Some(deactivate) = run.d.deactivate {
-            deactivate(run.h);
+            // SAFETY: `run.h` is live until drop.
+            unsafe { deactivate(run.h) };
         }
         run.activate();
         let second = run.process(&input, 480, false);
@@ -496,12 +506,16 @@ fn run_never_allocates() {
             run.activate();
             let (connect, plugin_run) = (run.d.connect_port.unwrap(), run.d.run.unwrap());
             let mut buf = vec![0.0f32; block];
-            connect(run.h, 0, buf.as_mut_ptr());
-            connect(run.h, 1, buf.as_mut_ptr());
+            // SAFETY: `run.h` is live; `buf` holds `block` samples and outlives the runs.
+            unsafe {
+                connect(run.h, 0, buf.as_mut_ptr());
+                connect(run.h, 1, buf.as_mut_ptr());
+            }
             let mut calls = 0;
             for piece in input.chunks(block) {
                 buf[..piece.len()].copy_from_slice(piece);
-                calls += heap_calls(|| plugin_run(run.h, piece.len() as c_ulong));
+                // SAFETY: as above, and `piece` is at most `block` long.
+                calls += heap_calls(|| unsafe { plugin_run(run.h, piece.len() as c_ulong) });
             }
             assert_eq!(calls, 0, "block {block}, gate {}", gate.1);
         }

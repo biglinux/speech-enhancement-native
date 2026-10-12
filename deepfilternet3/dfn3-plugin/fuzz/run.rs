@@ -50,9 +50,14 @@ fuzz_target!(|data: &[u8]| {
         .map(|b| f32::from_le_bytes(*b))
         .collect();
 
-    let h = (d.instantiate.unwrap())(d, 48_000);
+    // SAFETY: instantiate() takes no pointer it reads.
+    let h = unsafe { (d.instantiate.unwrap())(d, 48_000) };
     assert!(!h.is_null());
-    let (connect, run) = (d.connect_port.unwrap(), d.run.unwrap());
+    let (connect, run, activate) = (
+        d.connect_port.unwrap(),
+        d.run.unwrap(),
+        d.activate.unwrap(),
+    );
     let mut controls = [0.0f32; CONTROL_PORTS.len()];
     for (k, &sel) in header[3..].iter().enumerate() {
         controls[k] = match sel {
@@ -65,40 +70,45 @@ fuzz_target!(|data: &[u8]| {
             }
         };
     }
-    for (k, &sel) in header[3..].iter().enumerate() {
-        if sel != 0 {
-            connect(h, CONTROL_PORTS[k] as c_ulong, &raw mut controls[k]);
-        }
-    }
     let mut latency = 0.0f32;
-    connect(h, LATENCY, &raw mut latency);
     let mut buf = vec![0.0f32; block];
     let mut separate = vec![0.0f32; block];
     let in_place = flags & IN_PLACE != 0;
-    connect(h, 0, buf.as_mut_ptr());
-    connect(
-        h,
-        1,
-        if in_place {
-            buf.as_mut_ptr()
-        } else {
-            separate.as_mut_ptr()
-        },
-    );
-    if flags & ACTIVATE != 0 {
-        (d.activate.unwrap())(h);
+    let out_ptr = if in_place {
+        buf.as_mut_ptr()
+    } else {
+        separate.as_mut_ptr()
+    };
+    // SAFETY: `h` lives until cleanup(); the controls, latency and both buffers
+    // (`block` samples each) outlive every run.
+    unsafe {
+        for (k, &sel) in header[3..].iter().enumerate() {
+            if sel != 0 {
+                connect(h, CONTROL_PORTS[k] as c_ulong, &raw mut controls[k]);
+            }
+        }
+        connect(h, LATENCY, &raw mut latency);
+        connect(h, 0, buf.as_mut_ptr());
+        connect(h, 1, out_ptr);
+        if flags & ACTIVATE != 0 {
+            activate(h);
+        }
+        run(h, 0);
     }
-    run(h, 0);
     let pieces = input.len().div_ceil(block);
     for (i, piece) in input.chunks(block).enumerate() {
-        if flags & REACTIVATE != 0 && i == pieces / 2 {
-            (d.activate.unwrap())(h);
-        }
         buf[..piece.len()].copy_from_slice(piece);
-        run(h, piece.len() as c_ulong);
+        // SAFETY: as above, and `piece` is at most `block` long.
+        unsafe {
+            if flags & REACTIVATE != 0 && i == pieces / 2 {
+                activate(h);
+            }
+            run(h, piece.len() as c_ulong);
+        }
         let out = if in_place { &buf } else { &separate };
         assert!(out[..piece.len()].iter().all(|v| v.is_finite()));
     }
     assert!(latency.is_finite() && latency > 0.0, "latency {latency}");
-    (d.cleanup.unwrap())(h);
+    // SAFETY: `h` came from instantiate() and is reclaimed once, here.
+    unsafe { (d.cleanup.unwrap())(h) };
 });

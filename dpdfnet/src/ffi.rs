@@ -110,8 +110,10 @@ pub unsafe extern "C" fn dpdfnet_native_spectrum(
     let _denormals = DenormalGuard::new();
     let finite = no_unwind(None, || {
         let y = audio.model.process_spectrum(&spec, 0.0);
-        // SAFETY: `output` covers BINS * 2 floats and `y` is owned by the model,
-        // so the copy cannot overlap even when `output == input`.
+        assert_eq!(y.len(), BINS * 2);
+        // SAFETY: `output` covers BINS * 2 floats, `y` holds as many (asserted)
+        // and is owned by the model, so the copy cannot overlap even when
+        // `output == input`.
         unsafe { std::ptr::copy_nonoverlapping(y.as_ptr(), output, BINS * 2) };
         Some(y.iter().all(|v| v.is_finite()))
     });
