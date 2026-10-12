@@ -56,6 +56,7 @@ const PORT_OUTPUT: i32 = 0x2;
 const PORT_CONTROL: i32 = 0x4;
 const PORT_AUDIO: i32 = 0x8;
 const HINT_BOUNDED: i32 = 0x1 | 0x2;
+const HINT_INTEGER: i32 = 0x20;
 // Defaults interpolate linearly between the bounds.
 const DEFAULT_MINIMUM: i32 = 0x40;
 const DEFAULT_MIDDLE: i32 = 0xC0;
@@ -78,7 +79,9 @@ const VOICE_GATE: usize = ANCHORS + NUM_ANCHORS;
 /// Output: the current input-to-output delay in samples. PipeWire's filter-chain
 /// adds an output control named `latency` to the node's latency.
 const LATENCY: usize = VOICE_GATE + 1;
-const PORT_COUNT: usize = LATENCY + 1;
+/// 0 hears with Silero, 1 with FireRedVAD's streaming model.
+const VOICE_DETECTOR: usize = LATENCY + 1;
+const PORT_COUNT: usize = VOICE_DETECTOR + 1;
 
 /// Input samples are clamped to ±8 (+18 dBFS): anything beyond is not audio.
 const MAX_INPUT: f32 = 8.0;
@@ -113,6 +116,7 @@ const NAMES: [&CStr; PORT_COUNT] = [
     c"Silence floor 16 kHz (dB)",
     c"Voice gate depth (dB)",
     c"latency",
+    c"Voice detector (0 Silero, 1 FireRedVAD)",
 ];
 
 struct Names([*const c_char; PORT_COUNT]);
@@ -172,6 +176,12 @@ static PORT_HINTS: [PortRangeHint; PORT_COUNT] = {
     // 40 dB, on; 60 or more mutes completely, 0 is off. On, it adds the delay that
     // brings either engine to `VoiceGate::LAG` (66 ms), read once per activation.
     h[VOICE_GATE] = bounded(DEFAULT_MIDDLE, 0.0, 80.0);
+    // Silero, read once per activation like the gate.
+    h[VOICE_DETECTOR] = PortRangeHint {
+        hint_descriptor: HINT_BOUNDED | HINT_INTEGER | DEFAULT_MINIMUM,
+        lower: 0.0,
+        upper: 1.0,
+    };
     h
 };
 
@@ -381,6 +391,8 @@ extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
             inst.startup_samples = (ms.clamp(0.0, 1000.0) * SR as f32 / 1000.0).round() as usize;
         }
         inst.gate_on = gate_db > 0.0;
+        inst.gate
+            .use_firered(inst.control(VOICE_DETECTOR).is_some_and(|v| v >= 0.5));
         inst.first_run = false;
     }
     let p = inst.ports[LATENCY];

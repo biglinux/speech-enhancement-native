@@ -92,11 +92,20 @@ dependencies = [
 name = "dpdfnet-native"
 version = "0.1.0"
 dependencies = [
+ "firered-vad",
  "libc",
  "ops",
  "realfft",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "firered-vad"
+version = "0.1.0"
+dependencies = [
+ "ops",
+ "realfft",
 ]
 
 [[package]]
@@ -280,6 +289,7 @@ dependencies = [
 name = "silero-vad"
 version = "0.1.0"
 dependencies = [
+ "firered-vad",
  "ops",
 ]
 

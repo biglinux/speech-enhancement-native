@@ -38,8 +38,20 @@ fn ladspa_chain(x: &[f32]) -> Vec<f32> {
 }
 fn enhance(input: &[u8], channels: usize, threads: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    offline::enhance(&load(), input, &mut out, channels, threads, 48.0)?;
+    offline::enhance(&load(), input, &mut out, channels, threads, 48.0, false)?;
     Ok(out)
+}
+fn speech() -> Vec<f32> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../testdata/speech.pcm"
+    ))
+    .expect("testdata/speech.pcm")
+    .as_chunks::<2>()
+    .0
+    .iter()
+    .map(|&b| f32::from(i16::from_le_bytes(b)) / 32768.0)
+    .collect()
 }
 #[test]
 fn matches_the_ladspa_chain_with_any_thread_count() {
@@ -68,4 +80,32 @@ fn recording_shorter_than_the_lead_in() {
 fn empty_input_and_partial_frames() {
     assert_eq!(enhance(&[], 2, 2).unwrap(), Vec::<u8>::new());
     assert!(enhance(&[0; 12], 2, 2).is_err());
+}
+#[test]
+fn speech_only_filters_the_enhanced_output() {
+    let mut voice = vec![0.0; 3 * 48_000];
+    voice.extend(speech());
+    voice.resize(voice.len() + 3 * 48_000, 0.0);
+    let channels = [voice.clone(), signal(voice.len(), 0.4)];
+    let expected: Vec<Vec<f32>> = channels
+        .iter()
+        .map(|raw| {
+            let clean = ladspa_chain(raw);
+            let mut filter = firered_vad::SpeechOnly::new();
+            let mut out = Vec::new();
+            filter.push(raw, &clean, &mut out);
+            filter.finish(&mut out);
+            out
+        })
+        .collect();
+    // The speech is kept, the tone silenced.
+    assert!(expected[0].iter().any(|&v| v != 0.0));
+    assert!(expected[1].iter().all(|&v| v == 0.0));
+    let expected = bytes(&interleave(&expected));
+    let input = bytes(&interleave(&channels));
+    for threads in [1, 6] {
+        let mut out = Vec::new();
+        offline::enhance(&load(), &input[..], &mut out, 2, threads, 48.0, true).unwrap();
+        assert_eq!(out, expected, "{threads} threads");
+    }
 }

@@ -150,6 +150,32 @@ ffmpeg -i in.m4a -ar 48000 -f f32le - |
 
 `--channels` is 1 to 64 (default 1), `--attenuation` 0 to 100 dB (default
 100), `--threads` 1 to 256 stage threads (default below); `--help` lists them.
+
+`--speech-only` silences what is not a voice, for the converters' pause finder.
+DPDFNet lets music and sound effects through as if they were a voice; the
+[FireRedVAD](firered-vad.md) AED, which tells speech, singing and music apart,
+hears each channel's raw input and its enhanced output. A frame's probability is
+the raw input's speech or singing and, while the raw input does not sound like
+music (below 0.3), the enhanced output's speech, which noise cannot bury; each is
+a five-frame average. A frame is voice from 0.5 until 320 ms in a row stay below
+0.25. The second before and the half second after a voice are kept: a word's
+onset is heard late and its fading tail not at all. The output still has the
+input's length.
+
+On three 10-minute excerpts of a 5.1 film mix, with the dialogue taken from the
+center channel within the subtitle times and the pauses found as the converter
+does, the enhanced audio alone keeps 97.4% of the dialogue and passes 493 s of
+the 30 minutes of score and effects alone as speech; with `--speech-only` it
+keeps 97.1% and passes 69 s. A six-minute voice message and a 21-minute talk
+keep every word; ten minutes of loud room noise pass 1.6 s instead of 216 s, and
+the speech after them stays. In a 31-second rock song intro, 8.7 s pass instead
+of 15.6 s. Silero is not used here: hearing the enhanced audio as well, it keeps
+96.3% of the dialogue but passes all 15.6 s of that intro, whose instruments
+sound like a voice after DPDFNet. Speech at the level of white noise around it,
+which the AED misses in the raw input, is kept through the enhanced output. The
+two AED passes cost 7% more instructions than enhancement alone and 7 MB more
+memory, mono; they run in the thread that writes the output.
+
 The model comes from `DPDFNET_NATIVE_MODEL` or the installed bundle. Usage
 errors exit with 2, processing errors with 1, and raw samples are never written
 to a terminal.

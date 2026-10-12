@@ -1,5 +1,5 @@
 //! The Silero VAD 16 kHz model (snakers4/silero-vad 6.2.3, MIT) run natively, and the
-//! voice gate built on it.
+//! voice gate built on it or, by choice, on the FireRedVAD streaming model.
 //!
 //! DeepFilterNet3 lets short bursts of noise through while nobody speaks. The gate mutes
 //! the denoiser's output whenever the detector hears no speech in the *raw* input: deciding
@@ -11,6 +11,7 @@
 
 use std::sync::OnceLock;
 
+use firered_vad::StreamVad;
 use ops::resample::{Down3, LPF_DELAY};
 use ops::{relu_inplace, sigmoid, vdot_f32};
 
@@ -247,17 +248,177 @@ fn conv(
     }
 }
 
-/// Probabilities at which the gate opens and, after `HOLD_CHUNKS`, closes.
+/// Probabilities at which the gate opens and, after `HOLD_CHUNKS`, closes. FireRedVAD
+/// is surer of itself: below 0.9 it lets steady room noise through.
 const OPEN_AT: f32 = 0.2;
 const CLOSE_BELOW: f32 = 0.1;
-/// 320 ms in a row below `CLOSE_BELOW` closes the gate, bridging the pauses
-/// between words.
+const FIRERED_OPEN_AT: f32 = 0.9;
+const FIRERED_CLOSE_BELOW: f32 = 0.45;
+/// 320 ms in a row below the closing probability closes, bridging the pauses between
+/// words.
 const HOLD_CHUNKS: u32 = 10;
 /// Decisions remembered for outputs that lag the input (256 ms at 32 ms each).
 const HISTORY: usize = 8;
 /// A chunk this quiet is digital silence: no inference, and after ~1 s a fresh state.
 const SILENT_PEAK: f32 = 1e-6;
 const SILENT_RESET_CHUNKS: u32 = 32;
+/// Chunks between restarts of each of the gate detector's two models (32.8 s): a model
+/// restarted seconds ago takes steady room noise for speech.
+const GATE_RESTART_CHUNKS: u32 = 1024;
+
+/// Speech probabilities that stay reliable over hours of audio.
+///
+/// A model run for minutes over music or sound effects drifts until it no longer hears
+/// speech; the official ONNX model does the same. Two models restart in turn, half a
+/// period apart, and the one restarted longer ago answers: it always has between half a
+/// period and a period of context.
+pub struct Detector {
+    models: [Silero; 2],
+    restart: u32,
+    chunks: u32,
+}
+
+impl Detector {
+    /// # Panics
+    ///
+    /// If `restart_chunks` is not a power of two of at least 2.
+    #[must_use]
+    pub fn new(restart_chunks: u32) -> Self {
+        // A power of two divides 2^32, so the wrapping chunk count keeps the phase.
+        assert!(
+            restart_chunks >= 2 && restart_chunks.is_power_of_two(),
+            "the restart period must be a power of two"
+        );
+        Self {
+            models: [Silero::new(), Silero::new()],
+            restart: restart_chunks,
+            chunks: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.models.iter_mut().for_each(Silero::reset);
+        self.chunks = 0;
+    }
+
+    /// Speech probability of the next `CHUNK` samples.
+    pub fn process(&mut self, chunk: &[f32; CHUNK]) -> f32 {
+        let age = self.chunks % self.restart;
+        if age == 0 {
+            self.models[0].reset();
+        } else if age == self.restart / 2 {
+            self.models[1].reset();
+        }
+        self.chunks = self.chunks.wrapping_add(1);
+        let first = self.models[0].process(chunk);
+        let second = self.models[1].process(chunk);
+        if age >= self.restart / 2 {
+            first
+        } else {
+            second
+        }
+    }
+}
+
+/// Raw 48 kHz audio in, one speech probability per `CHUNK_48K` samples out. Probability
+/// `k` covers the chunk of input that starts at `k * CHUNK_48K - LPF_DELAY`.
+struct Listener {
+    detector: Detector,
+    /// Built with the gate, so choosing it on the real-time thread allocates nothing.
+    firered: StreamVad,
+    use_firered: bool,
+    down: Down3,
+    down_out: Vec<f32>,
+    chunk: [f32; CHUNK],
+    filled: usize,
+    silent: u32,
+}
+
+impl Listener {
+    fn new(max_block: usize, restart_chunks: u32) -> Self {
+        Self {
+            detector: Detector::new(restart_chunks),
+            firered: StreamVad::new(CHUNK),
+            use_firered: false,
+            down: Down3::new(max_block),
+            down_out: Vec::with_capacity(max_block / 3 + 2),
+            chunk: [0.0; CHUNK],
+            filled: 0,
+            silent: 0,
+        }
+    }
+
+    fn hear(&mut self, raw: &[f32], mut heard: impl FnMut(f32)) {
+        self.down.process(raw, &mut self.down_out);
+        let mut taken = 0;
+        while taken < self.down_out.len() {
+            let n = (CHUNK - self.filled).min(self.down_out.len() - taken);
+            self.chunk[self.filled..self.filled + n]
+                .copy_from_slice(&self.down_out[taken..taken + n]);
+            self.filled += n;
+            taken += n;
+            if self.filled == CHUNK {
+                self.filled = 0;
+                heard(self.probability());
+            }
+        }
+    }
+
+    fn probability(&mut self) -> f32 {
+        if self.use_firered {
+            // The surest of the frames completed in this chunk; the first chunk
+            // completes one, later ones three or four.
+            let mut most = 0.0f32;
+            self.firered.push(&self.chunk, |p| most = most.max(p));
+            return most;
+        }
+        let peak = self.chunk.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        if peak < SILENT_PEAK {
+            self.silent = self.silent.saturating_add(1);
+            if self.silent == SILENT_RESET_CHUNKS {
+                self.detector.reset();
+            }
+            0.0
+        } else {
+            self.silent = 0;
+            self.detector.process(&self.chunk)
+        }
+    }
+}
+
+/// Opens at `open_at`; closes after `HOLD_CHUNKS` chunks in a row below `close_below`.
+struct Hysteresis {
+    open_at: f32,
+    close_below: f32,
+    is_open: bool,
+    quiet: u32,
+}
+
+impl Hysteresis {
+    const fn new(open_at: f32, close_below: f32) -> Self {
+        Self {
+            open_at,
+            close_below,
+            is_open: false,
+            quiet: 0,
+        }
+    }
+
+    fn step(&mut self, probability: f32) -> bool {
+        if probability >= self.open_at {
+            self.is_open = true;
+            self.quiet = 0;
+        } else if probability >= self.close_below {
+            self.quiet = 0;
+        } else if self.is_open {
+            self.quiet = self.quiet.saturating_add(1);
+            if self.quiet >= HOLD_CHUNKS {
+                self.is_open = false;
+            }
+        }
+        self.is_open
+    }
+}
 
 /// Mutes a denoiser's output while the raw 48 kHz input holds no speech.
 ///
@@ -270,16 +431,10 @@ const SILENT_RESET_CHUNKS: u32 = 32;
 /// decision, and so does one whose decisions have left the last `HISTORY`: feed the
 /// input at most a few chunks ahead of the output.
 pub struct VoiceGate {
-    vad: Silero,
-    down: Down3,
-    down_out: Vec<f32>,
-    chunk: [f32; CHUNK],
-    filled: usize,
+    listener: Listener,
+    hysteresis: Hysteresis,
     decided: u64,
     open: [bool; HISTORY],
-    is_open: bool,
-    quiet: u32,
-    silent: u32,
     gain: f32,
     floor: f32,
     attack: f32,
@@ -291,16 +446,10 @@ impl VoiceGate {
     #[must_use]
     pub fn new(depth_db: f32, max_block: usize) -> Self {
         let mut gate = Self {
-            vad: Silero::new(),
-            down: Down3::new(max_block),
-            down_out: Vec::with_capacity(max_block / 3 + 2),
-            chunk: [0.0; CHUNK],
-            filled: 0,
+            listener: Listener::new(max_block, GATE_RESTART_CHUNKS),
+            hysteresis: Hysteresis::new(OPEN_AT, CLOSE_BELOW),
             decided: 0,
             open: [false; HISTORY],
-            is_open: false,
-            quiet: 0,
-            silent: 0,
             gain: 0.0,
             floor: 0.0,
             attack: 1.0 - (-1.0f32 / (0.010 * 48_000.0)).exp(),
@@ -308,6 +457,18 @@ impl VoiceGate {
         };
         gate.set_depth(depth_db);
         gate
+    }
+
+    /// Hears with FireRedVAD's streaming model instead of Silero. Choose before the
+    /// first `feed`: switching later starts the new model mid-stream.
+    pub fn use_firered(&mut self, firered: bool) {
+        self.listener.use_firered = firered;
+        let (open_at, close_below) = if firered {
+            (FIRERED_OPEN_AT, FIRERED_CLOSE_BELOW)
+        } else {
+            (OPEN_AT, CLOSE_BELOW)
+        };
+        self.hysteresis = Hysteresis::new(open_at, close_below);
     }
 
     pub fn set_depth(&mut self, depth_db: f32) {
@@ -325,53 +486,17 @@ impl VoiceGate {
 
     /// Feed raw 48 kHz input.
     pub fn feed(&mut self, raw: &[f32]) {
-        self.down.process(raw, &mut self.down_out);
-        let mut taken = 0;
-        while taken < self.down_out.len() {
-            let n = (CHUNK - self.filled).min(self.down_out.len() - taken);
-            self.chunk[self.filled..self.filled + n]
-                .copy_from_slice(&self.down_out[taken..taken + n]);
-            self.filled += n;
-            taken += n;
-            if self.filled == CHUNK {
-                self.filled = 0;
-                self.decide();
-            }
-        }
-    }
-
-    fn decide(&mut self) {
-        let peak = self.chunk.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        let probability = if peak < SILENT_PEAK {
-            self.silent = self.silent.saturating_add(1);
-            if self.silent == SILENT_RESET_CHUNKS {
-                self.vad.reset();
-            }
-            0.0
-        } else {
-            self.silent = 0;
-            self.vad.process(&self.chunk)
-        };
-        let open = self.step(probability);
-        self.open[(self.decided % HISTORY as u64) as usize] = open;
-        self.decided += 1;
-    }
-
-    /// Hysteresis: open at `OPEN_AT`, close after `HOLD_CHUNKS` consecutive chunks
-    /// below `CLOSE_BELOW`.
-    fn step(&mut self, probability: f32) -> bool {
-        if probability >= OPEN_AT {
-            self.is_open = true;
-            self.quiet = 0;
-        } else if probability >= CLOSE_BELOW {
-            self.quiet = 0;
-        } else if self.is_open {
-            self.quiet = self.quiet.saturating_add(1);
-            if self.quiet >= HOLD_CHUNKS {
-                self.is_open = false;
-            }
-        }
-        self.is_open
+        let Self {
+            listener,
+            hysteresis,
+            decided,
+            open,
+            ..
+        } = self;
+        listener.hear(raw, |probability| {
+            open[(*decided % HISTORY as u64) as usize] = hysteresis.step(probability);
+            *decided += 1;
+        });
     }
 
     /// The decisions `gain(t)` combines: the chunk holding `t` through the first one
@@ -390,7 +515,7 @@ impl VoiceGate {
         } else if (last as u64) < self.decided && self.decided - (first as u64) <= HISTORY as u64 {
             (first..=last).any(|k| self.open[(k as u64 % HISTORY as u64) as usize])
         } else {
-            self.is_open
+            self.hysteresis.is_open
         };
         let target = if open { 1.0 } else { self.floor };
         let rate = if target > self.gain {
@@ -412,7 +537,7 @@ mod tests {
         let mut gate = VoiceGate::new(40.0, 4096);
         gate.feed(&vec![0.0; CHUNK_48K * 40]);
         assert_eq!(gate.decided, 40);
-        assert!(!gate.is_open);
+        assert!(!gate.hysteresis.is_open);
         assert!(gate.gain(CHUNK_48K as i64 * 39) <= 0.011);
     }
 
@@ -467,7 +592,7 @@ mod tests {
 
     #[test]
     fn the_gate_closes_after_the_hold_of_consecutive_quiet_chunks() {
-        let mut gate = VoiceGate::new(40.0, 0);
+        let mut gate = Hysteresis::new(OPEN_AT, CLOSE_BELOW);
         assert!(gate.step(0.9));
         assert!((0..HOLD_CHUNKS - 1).all(|_| gate.step(0.0)));
         // A chunk between the thresholds keeps the state and restarts the hold.

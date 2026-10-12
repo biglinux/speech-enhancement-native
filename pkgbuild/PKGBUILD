@@ -36,7 +36,7 @@ _licenses() {
 }
 
 package_deepfilternet3-native() {
-    pkgdesc='DeepFilterNet3 and DeepFilterNet3-LL noise suppression with a Silero voice gate, native int8/SIMD Rust engine (LADSPA plugins)'
+    pkgdesc='DeepFilterNet3 and DeepFilterNet3-LL noise suppression with a Silero or FireRedVAD voice gate, native int8/SIMD Rust engine (LADSPA plugins)'
     license=('MIT OR Apache-2.0')
     depends=('libgcc' 'glibc')
     # Transition from deepfilternet-quantized-ladspa, which also held the AEC:
@@ -56,6 +56,8 @@ package_deepfilternet3-native() {
         "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-DeepFilterNet-MIT"
     install -Dm644 silero-vad/model/LICENSE-Silero \
         "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-Silero"
+    install -Dm644 firered-vad/model/LICENSE-FireRedVAD \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-FireRedVAD"
 }
 
 package_dpdfnet-native() {
@@ -70,6 +72,9 @@ package_dpdfnet-native() {
         dpdfnet/model/dpdfnet2_48khz_hr-w8a16/{manifest.json,packing.json,weights.bin}
     _licenses
     install -Dm644 dpdfnet/model/LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-DPDFNet"
+    # dpdfnet-enhance --speech-only embeds the FireRedVAD AED.
+    install -Dm644 firered-vad/model/LICENSE-FireRedVAD \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-FireRedVAD"
 }
 
 package_gtcrn-aec-native() {

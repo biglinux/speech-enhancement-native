@@ -10,6 +10,7 @@ members = [
     "gtcrn-aec/gtcrn-aec",
     "gtcrn-aec/spa-aec-gtcrn",
     "silero-vad",
+    "firered-vad",
 ]
 exclude = ["deepfilternet3/dfn3-ladspa/fuzz", "deepfilternet3/dfn3ll-ladspa/fuzz"]
 resolver = "3"

@@ -1,0 +1,15 @@
+[package]
+name = "firered-vad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native FireRedVAD: the AED that tells speech, singing and music apart, and the streaming VAD"
+publish.workspace = true
+
+[dependencies]
+ops = { path = "../ops" }
+realfft = "3.5"
+
+[lints]
+workspace = true

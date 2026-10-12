@@ -4,8 +4,8 @@ Native Rust inference engines for published speech-enhancement models, built as
 LADSPA and PipeWire plugins for BigLinux.
 
 The models come from their authors: DeepFilterNet3 (Schröter et al.), DPDFNet
-(Ceva), GTCRN-AEC (LocalVQE) and Silero VAD (Silero Team). This repository
-reimplements their inference path without ONNX Runtime, OpenVINO or PyTorch.
+(Ceva), GTCRN-AEC (LocalVQE), Silero VAD (Silero Team) and FireRedVAD
+(FireRedTeam). This repository reimplements their inference path without ONNX Runtime, OpenVINO or PyTorch.
 Recurrent weights are int8 with int16 activations (W8A16), and the kernels are
 chosen at runtime for the CPU: scalar, SSE4.1, AVX or AVX2+FMA. The int8 matrix
 products accumulate exactly in integers, so their result does not depend on the
@@ -23,9 +23,10 @@ tier.
 | `gtcrn-aec-native` | GTCRN-AEC echo cancellation | `/usr/lib/spa-0.2/aec/libspa-aec-gtcrn.so` | `library.name = aec/libspa-aec-gtcrn` |
 
 All plugins take 48 kHz mono and accept any host block size. Both DeepFilterNet3
-plugins include a Silero voice gate that mutes the output while nobody speaks.
-It is on by default and raises the latency of both engines to 66 ms, from 40 ms
-for DeepFilterNet3 and 20 ms for DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
+plugins include a voice gate that mutes the output while nobody speaks, with
+Silero or, by choice, FireRedVAD as its detector. It is on by default and raises
+the latency of both engines to 66 ms, from 40 ms for DeepFilterNet3 and 20 ms for
+DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
 Each LADSPA plugin reports its current delay, in samples, on an output control
 port named `latency`, which PipeWire's filter-chain adds to the node latency.
 
@@ -40,7 +41,7 @@ CPU seconds per minute of audio, one core, measured with `perf stat`
 | DeepFilterNet3-LL | 2.1 | 15.2 |
 | DPDFNet-2 48 kHz HR | 3.9 | 27.3 |
 | GTCRN-AEC (16 kHz core) | 1.2 | 7.2 |
-| Voice gate, added to either DeepFilterNet3 engine | 0.07 | 0.44 |
+| Voice gate, added to either DeepFilterNet3 engine | 0.21 | not measured |
 
 ## Build
 
@@ -65,6 +66,8 @@ ops/              int8/SIMD kernels and resampler shared by all engines
 deepfilternet3/   DeepFilterNet3 and -LL engines, their shared LADSPA plugin crate,
                   CLIs and benchmark, weight quantizer
 silero-vad/       Silero VAD and the voice gate of the DeepFilterNet3 plugins
+firered-vad/      FireRedVAD: the AED behind dpdfnet-enhance --speech-only and the
+                  streaming model the voice gate can use instead of Silero
 limiter-ladspa/   peak limiter
 dpdfnet/          DPDFNet engine, model bundle, export tools
 gtcrn-aec/        GTCRN-AEC engine, PipeWire SPA plugin, model, evaluation harness

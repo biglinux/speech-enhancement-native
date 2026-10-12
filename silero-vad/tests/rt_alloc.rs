@@ -14,8 +14,12 @@ fn tone(n: usize) -> Vec<f32> {
 
 #[test]
 fn feeding_and_gating_never_allocate_after_warm_up() {
-    for block in [1usize, 128, 480, 1024, 4096] {
+    for (block, firered) in [1usize, 128, 480, 1024, 4096]
+        .into_iter()
+        .flat_map(|b| [(b, false), (b, true)])
+    {
         let mut gate = VoiceGate::new(40.0, 4096);
+        gate.use_firered(firered);
         let input = tone(CHUNK_48K * 12);
         let mut t = 0i64;
         // Warm-up: first decision, weights shared, buffers at their working size.
@@ -31,7 +35,7 @@ fn feeding_and_gating_never_allocate_after_warm_up() {
                 }
             }
         });
-        assert_eq!(calls, 0, "block {block} allocated");
+        assert_eq!(calls, 0, "block {block}, FireRedVAD {firered} allocated");
     }
 }
 

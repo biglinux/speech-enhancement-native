@@ -7,11 +7,14 @@ use dpdfnet_native::{Bundle, offline};
 use std::{io::IsTerminal, process::ExitCode};
 
 const USAGE: &str = "\
-usage: dpdfnet-enhance [--channels N] [--threads N] [--attenuation DB] < f32le > f32le
+usage: dpdfnet-enhance [--channels N] [--threads N] [--attenuation DB] [--speech-only]
+                       < f32le > f32le
 
   --channels N      interleaved channels, 1-64 (default 1)
   --threads N       stage threads, 1-256 (default: cores of the fastest kind)
   --attenuation DB  0 keeps the input, 100 removes all noise (default 100)
+  --speech-only     silence what the voice detector does not hear as speech,
+                    to find the pauses between words
 
 The model is read from $DPDFNET_NATIVE_MODEL, else the installed bundle.";
 
@@ -19,6 +22,7 @@ struct Options {
     channels: usize,
     threads: usize,
     attenuation: f32,
+    speech_only: bool,
 }
 
 fn value<T: std::str::FromStr>(
@@ -35,12 +39,14 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     let mut channels = 1usize;
     let mut threads = None;
     let mut attenuation = 100.0f32;
+    let mut speech_only = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--channels" => channels = value(&mut args, "--channels")?,
             "--threads" => threads = Some(value(&mut args, "--threads")?),
             "--attenuation" => attenuation = value(&mut args, "--attenuation")?,
+            "--speech-only" => speech_only = true,
             _ => return Err(format!("unknown argument {arg:?}")),
         }
     }
@@ -58,6 +64,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
         channels,
         threads,
         attenuation,
+        speech_only,
     }))
 }
 
@@ -89,6 +96,7 @@ fn main() -> ExitCode {
             options.channels,
             options.threads,
             options.attenuation,
+            options.speech_only,
         )
     });
     match result {

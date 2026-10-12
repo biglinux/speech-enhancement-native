@@ -51,5 +51,20 @@ project is not affiliated with or endorsed by the upstream authors.
    Changes: the ONNX initializers written as raw little-endian f32
    (silero-vad/tools/export_weights.py), values unchanged.
 
+5. FireRedVAD (AED and Stream-VAD)
+   Kaituo Xu, Wenpeng Li, Kai Huang, Kun Liu (Xiaohongshu).
+   https://github.com/FireRedTeam/FireRedVAD
+   License: Apache-2.0 (firered-vad/model/LICENSE-FireRedVAD).
+   Checkpoints AED/model.pth.tar, Stream-VAD/model.pth.tar and their cmvn.ark
+   from https://huggingface.co/FireRedTeam/FireRedVAD,
+   revision 7990aaccc6b7aec1e527743bd30201f2c4a03b8c, sha256
+   ad08a4e05b58ca328154e158d24cff57a2fe796ceabb63bb701544c3f7d4f7ad (AED),
+   ec88a8ae8ac5f004cdbd20c1eac4a9e9d12067c3d51ac5b141afa1f921fb59c9 (Stream-VAD),
+   c87f6f13edf0f0ec7535ddfc9cc3387d9268cb234b70182d566c5e2edf3ca473 (cmvn.ark).
+   Files: firered-vad/model/firered_aed.bin, firered-vad/model/firered_stream_vad.bin
+   Changes: the CMVN statistics turned into means and inverse deviations, linear
+   weights transposed and memory filters reordered by tap, written as raw
+   little-endian f32 (firered-vad/tools/export_weights.py), values unchanged.
+
 Rust dependencies keep their own licenses; `cargo deny check licenses` lists
 them.

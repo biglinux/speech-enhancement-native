@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 ops = { path = "../ops" }
+firered-vad = { path = "../firered-vad" }
 libc = "0.2"
 realfft = "3.5"
 serde_json = "1"

@@ -72,8 +72,9 @@ the same ports; new ports are only appended, so existing indices stay valid.
 | Post filter beta | 0 | DeepFilterNet post-filter strength; 0 is off. |
 | Startup mute (ms) | 1000 | Output muted while the model state settles. Set 0 for file processing. |
 | Silence floor 60 Hz … 16 kHz (dB) | -200 | Optional per-band floor the output must exceed to leave silence; -200 disables it. |
-| Voice gate depth (dB) | 40 | Attenuation while the Silero detector hears no speech ([voice gate](#voice-gate)); 0 is off, 60 or more mutes. On, it raises the latency of either engine to 66 ms. Read when the plugin starts running; switching it on or off takes effect at the next activation. |
+| Voice gate depth (dB) | 40 | Attenuation while the detector hears no speech ([voice gate](#voice-gate)); 0 is off, 60 or more mutes. On, it raises the latency of either engine to 66 ms. Read when the plugin starts running; switching it on or off takes effect at the next activation. |
 | latency (output) | | The current input-to-output delay in samples: 1919 or 959 without the voice gate, 3168 with it. |
+| Voice detector (0 Silero, 1 FireRedVAD) | 0 | The voice gate's detector. Read when the plugin starts running, like the gate. |
 
 The two skip thresholds default to 40 dB, the top of their range, so no stage
 is skipped: at 30 and 20 dB the SI-SDR improvement on noisy speech fell from 11
@@ -84,12 +85,17 @@ applies the port hints starts from.
 
 ## Voice gate
 
-Both plugins run Silero VAD (`silero-vad/`, a native f32 port of the 16 kHz
-model) on the raw input and attenuate the denoised output while it hears no
-speech. It removes the noise bursts the denoiser lets through when nobody talks.
+Both plugins run a voice detector on the raw input and attenuate the denoised
+output while it hears no speech. It removes the noise bursts the denoiser lets
+through when nobody talks. The detector is Silero VAD (`silero-vad/`, a native
+f32 port of the 16 kHz model) unless the Voice detector control chooses
+FireRedVAD's streaming model ([FireRedVAD](firered-vad.md)); the rest of the gate
+is the same for both, and so is the latency.
 
 - Opens at a speech probability of 0.2 and closes after 320 ms in a row below
-  0.1; attack 10 ms, release 150 ms. A decision covers 32 ms of input, and each sample is
+  0.1 (FireRedVAD: 0.9 and 0.45; below 0.9 it lets steady room noise through);
+  attack 10 ms, release 150 ms. A FireRedVAD chunk takes its most confident
+  10 ms frame. A decision covers 32 ms of input, and each sample is
   gated by the decision about its own chunk and the chunks up to 32 ms after
   it, so word onsets are kept.
 - The output is delayed until those decisions exist, so with the gate on both
@@ -104,11 +110,19 @@ speech. It removes the noise bursts the denoiser lets through when nobody talks.
   latency than DeepFilterNet3 without the gate and loses the point of its low
   latency; set its voice gate depth to 0 to keep 20 ms.
 
+- Silero runs as two models that restart in turn every 32.8 s, half a
+  period apart; the one restarted longer ago answers. A single model run for
+  minutes over music or sound effects drifts until it no longer hears speech,
+  and the official ONNX model does the same. A model restarted only seconds
+  ago takes steady room noise for speech: restarting every 4.1 s let 64 noise
+  bursts through on the recording below, where 32.8 s lets the same 3 as a
+  single model.
 - Digital silence skips inference; after about 1 s of it the detector state
   is reset.
 - Cost, measured as in [performance](performance.md) on one minute of noisy
-  speech: +0.07 s of CPU per minute on the i5-13400 and +0.44 s on the
-  i3-2375M, for either engine.
+  speech through FFmpeg, for either engine on the i5-13400: Silero +0.33 s of CPU
+  per minute (2.5 G instructions), FireRedVAD +0.55 s (1.6 G instructions; it
+  reads 2.2 MB of weights every 10 ms).
 
 Measured on a 10-minute recording of room noise followed by speech, at the
 app's settings (bursts above -50 dBFS in the noise part):
@@ -123,6 +137,28 @@ at most 2.6% of speech frames by more than 6 dB. Under steady pink noise it
 still attenuates the first 50 ms of 16–20% of words, and of 7–15% of whispered
 words; vacuum, keyboard and music under speech stay below 1.5%. Laughter,
 singing and real distant speech have not been measured.
+
+On film audio, three 10-minute excerpts of a 5.1 mix with the dialogue taken
+from the center channel within the subtitle times, DeepFilterNet3 at full
+strength keeps 95% of the dialogue and lets 375 s of the 30 minutes of score
+and effects alone through. With the gate at 80 dB it keeps 83% of the dialogue
+and lets 3 s through (DeepFilterNet3-LL: 84%, 7 s); a single model that never
+restarts keeps 77%. The dialogue it loses is shouting over engines and speech
+under loud music, which Silero does not hear in the raw input; listening
+to the denoised output as well would need about 42 ms more latency and let
+dozens of room-noise bursts through on the recording above.
+
+With FireRedVAD as the detector the gate trades the other way. On the film it
+keeps 94% of the dialogue (DeepFilterNet3-LL: 95%) and lets 18 s through (23 s).
+On the room-noise recording above it lets 6 bursts through, the loudest at
+-21.7 dBFS (5, at -19.6 dBFS), and on sixteen microphone recordings of speech it
+attenuates 0.66% of speech frames by more than 6 dB, against 0.36% with Silero
+(0.80% against 0.46%).
+
+| DeepFilterNet3, detector | Room-noise bursts | Speech frames cut | Film dialogue kept |
+|---|---:|---:|---:|
+| Silero | 3 | 0.36% | 83% |
+| FireRedVAD | 6 | 0.66% | 94% |
 
 DPDFNet has no voice gate: on the same recording its residual is a constant
 floor near -70 dBFS with rare bursts (loudest -16.5 dBFS), which listens as

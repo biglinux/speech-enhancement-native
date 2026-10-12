@@ -8,11 +8,15 @@
 //! same order, so the output is bit-identical to the LADSPA plugin for any
 //! thread count. The recording is preceded by its opening half second played
 //! backwards, the lead-in the converters put in front of the plugin.
+//!
+//! With `speech_only`, the writer also hears the raw input and keeps the enhanced
+//! audio only where speech is heard ([`SpeechOnly`]), for finding pauses.
 use crate::{
     AudioProcessor, Bundle, HOP, Result,
     audio::{Analysis, LATENCY, Synthesis, bounded_input},
     model::{Frame, Stage},
 };
+use firered_vad::SpeechOnly;
 use ops::DenormalGuard;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -52,6 +56,7 @@ pub fn enhance(
     channels: usize,
     threads: usize,
     attenuation_db: f32,
+    speech_only: bool,
 ) -> Result<()> {
     if channels == 0 || threads == 0 {
         return Err("channels and threads must be at least 1".into());
@@ -83,12 +88,20 @@ pub fn enhance(
         }
         let errors = out_tx.clone();
         drop(out_tx);
+        // Unbounded: the stages bound how far the reader runs ahead.
+        let (raw_tx, raw_rx) = mpsc::channel();
+        let raw_tx = speech_only.then_some(raw_tx);
         scope.spawn(move || {
-            if let Err(e) = read(input, &feeds) {
+            if let Err(e) = read(input, &feeds, raw_tx.as_ref()) {
                 let _ = errors.send(Err(e));
             }
         });
-        write(&mut output, channels, &out_rx)
+        let speech = speech_only.then(|| Speech {
+            filters: (0..channels).map(|_| SpeechOnly::new()).collect(),
+            raw: vec![VecDeque::new(); channels],
+            blocks: raw_rx,
+        });
+        write(&mut output, channels, &out_rx, speech)
     })
 }
 
@@ -383,7 +396,11 @@ fn fill(input: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
     Ok(filled)
 }
 
-fn read(mut input: impl Read, feeds: &[SyncSender<Option<Vec<f32>>>]) -> Result<()> {
+fn read(
+    mut input: impl Read,
+    feeds: &[SyncSender<Option<Vec<f32>>>],
+    raw: Option<&mpsc::Sender<Vec<Vec<f32>>>>,
+) -> Result<()> {
     let frame = 4 * feeds.len();
     let mut bytes = vec![0u8; frame * BLOCK];
     loop {
@@ -391,14 +408,24 @@ fn read(mut input: impl Read, feeds: &[SyncSender<Option<Vec<f32>>>]) -> Result<
         if n % frame != 0 {
             return Err("the input ends inside a frame".into());
         }
-        for (channel, feed) in feeds.iter().enumerate() {
-            let samples = bytes[..n]
-                .chunks_exact(frame)
-                .map(|f| {
-                    let s = &f[4 * channel..4 * channel + 4];
-                    f32::from_le_bytes([s[0], s[1], s[2], s[3]])
-                })
-                .collect();
+        let blocks: Vec<Vec<f32>> = (0..feeds.len())
+            .map(|channel| {
+                bytes[..n]
+                    .chunks_exact(frame)
+                    .map(|f| {
+                        let s = &f[4 * channel..4 * channel + 4];
+                        f32::from_le_bytes([s[0], s[1], s[2], s[3]])
+                    })
+                    .collect()
+            })
+            .collect();
+        // The writer must hold the raw samples before their enhanced ones can reach it.
+        if let Some(raw) = raw
+            && raw.send(blocks.clone()).is_err()
+        {
+            return Ok(());
+        }
+        for (feed, samples) in feeds.iter().zip(blocks) {
             if feed.send(Some(samples)).is_err() {
                 return Ok(());
             }
@@ -412,16 +439,62 @@ fn read(mut input: impl Read, feeds: &[SyncSender<Option<Vec<f32>>>]) -> Result<
     }
 }
 
+/// The writer's speech-only state: one filter and the raw samples not yet paired
+/// with their enhanced ones, per channel.
+struct Speech {
+    filters: Vec<SpeechOnly>,
+    raw: Vec<VecDeque<f32>>,
+    blocks: Receiver<Vec<Vec<f32>>>,
+}
+
+impl Speech {
+    /// Filters the next `clean` samples of `channel` against the raw input.
+    fn filter(&mut self, channel: usize, clean: &[f32], out: &mut Vec<f32>) -> Result<()> {
+        while self.raw[channel].len() < clean.len() {
+            let blocks = self
+                .blocks
+                .recv()
+                .map_err(|_| "the input stopped unexpectedly")?;
+            for (queue, block) in self.raw.iter_mut().zip(blocks) {
+                queue.extend(block);
+            }
+        }
+        let raw: Vec<f32> = self.raw[channel].drain(..clean.len()).collect();
+        self.filters[channel].push(&raw, clean, out);
+        Ok(())
+    }
+}
+
 fn write(
     output: &mut impl Write,
     channels: usize,
     results: &Receiver<Result<Output>>,
+    mut speech: Option<Speech>,
 ) -> Result<()> {
     let mut queues = vec![VecDeque::<f32>::new(); channels];
+    let mut ready = vec![Vec::<f32>::new(); channels];
     let mut length = None;
     let mut ended = 0;
     let mut written = 0;
     let mut bytes = Vec::new();
+    let mut send = |ready: &mut [Vec<f32>], written: &mut usize| -> Result<()> {
+        // Every channel's filter releases the same number of samples.
+        let take = ready.iter().map(Vec::len).min().unwrap_or(0);
+        bytes.clear();
+        for i in 0..take {
+            for column in ready.iter() {
+                bytes.extend_from_slice(&column[i].to_le_bytes());
+            }
+        }
+        ready.iter_mut().for_each(|column| {
+            column.drain(..take);
+        });
+        output
+            .write_all(&bytes)
+            .map_err(|e| format!("writing the output: {e}"))?;
+        *written += take;
+        Ok(())
+    };
     while ended < channels {
         match results
             .recv()
@@ -434,17 +507,23 @@ fn write(
             }
         }
         let take = queues.iter().map(VecDeque::len).min().unwrap_or(0);
-        bytes.clear();
-        for _ in 0..take {
-            for queue in &mut queues {
-                let x = queue.pop_front().unwrap_or_default();
-                bytes.extend_from_slice(&x.to_le_bytes());
+        for (channel, queue) in queues.iter_mut().enumerate() {
+            let clean = queue.drain(..take);
+            match &mut speech {
+                Some(speech) => {
+                    let clean: Vec<f32> = clean.collect();
+                    speech.filter(channel, &clean, &mut ready[channel])?;
+                }
+                None => ready[channel].extend(clean),
             }
         }
-        output
-            .write_all(&bytes)
-            .map_err(|e| format!("writing the output: {e}"))?;
-        written += take;
+        send(&mut ready, &mut written)?;
+    }
+    if let Some(speech) = &mut speech {
+        for (filter, column) in speech.filters.iter_mut().zip(&mut ready) {
+            filter.finish(column);
+        }
+        send(&mut ready, &mut written)?;
     }
     if length != Some(written) {
         return Err("the enhancement ended early".into());
