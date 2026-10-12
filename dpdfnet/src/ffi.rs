@@ -162,7 +162,7 @@ pub extern "C" fn dpdfnet_native_latency_samples() -> usize {
 mod tests {
     #[test]
     #[expect(deprecated, reason = "_mm_getcsr is the only stable reader of MXCSR")]
-    fn process_restores_the_callers_floating_point_environment() {
+    fn process_restores_caller_fp_environment() {
         use std::arch::x86_64::_mm_getcsr;
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),

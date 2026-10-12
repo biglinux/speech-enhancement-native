@@ -875,7 +875,7 @@ mod conv_tests {
                 let c = Conv::load(&bundle, &v).unwrap();
                 let f = 17;
                 let of = c.out_f(f).unwrap();
-                let data: Vec<f32> = (0..kt * f * ci)
+                let input: Vec<f32> = (0..kt * f * ci)
                     .map(|i| ((i * 173 % 1021) as f32 - 510.0) * 0.003)
                     .collect();
                 for start in 0..kt {
@@ -885,7 +885,7 @@ mod conv_tests {
                         let mut out = vec![91.75; of * spacing + 16];
                         let mut want = out.clone();
                         let view = View {
-                            data: &data,
+                            data: &input,
                             t: kt,
                             f,
                             c: ci,
@@ -900,7 +900,7 @@ mod conv_tests {
         }
     }
     #[test]
-    fn dprnn_shared_quantization_zero_shortcuts_and_tiling_are_exact() {
+    fn dprnn_fast_paths_are_exact() {
         for quant in [true, false] {
             for freq in [5, 40, 48] {
                 let mut w = Writer::new();
@@ -936,7 +936,7 @@ mod conv_shape_tests {
     use super::*;
     use crate::test_support::{Writer, assert_bits};
     #[test]
-    fn specialized_shapes_match_the_generic_path_for_strides_and_boundaries() {
+    fn specialized_shapes_match_generic_path() {
         for (ci, co, kt, kf, groups) in [(1, 64, 3, 3, 1), (2, 64, 3, 3, 2), (64, 64, 1, 1, 64)] {
             for nf in [3usize, 4, 7, 17, 48, 480] {
                 for stride in [1usize, 2, 3] {
@@ -949,7 +949,7 @@ mod conv_shape_tests {
                             let desc = serde_json::json!({"ci":ci,"co":co,"kt":kt,"kf":kf,"stride":stride,"pad":pad,"groups":groups,"weight":weight,"bias":bias,"activation":act});
                             let c = Conv::load(&b, &desc).unwrap();
                             let of = c.out_f(nf).unwrap();
-                            let data: Vec<f32> = (0..kt * nf * ci)
+                            let input: Vec<f32> = (0..kt * nf * ci)
                                 .map(|i| ((i * 719 % 401) as f32 - 200.0) * 0.003)
                                 .collect();
                             for start in 0..kt {
@@ -958,7 +958,7 @@ mod conv_shape_tests {
                                 let mut out = vec![111.25; of * spacing + 2];
                                 let mut want = out.clone();
                                 let x = View {
-                                    data: &data,
+                                    data: &input,
                                     t: kt,
                                     f: nf,
                                     c: ci,

@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn down3_matches_the_direct_convolution_at_any_block_size() {
+    fn down3_matches_direct_convolution() {
         let mut state = 1u32;
         let x: Vec<f32> = (0..9000)
             .map(|_| {

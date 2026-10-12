@@ -265,7 +265,7 @@ mod tests {
     // must land on the control exactly, as in the offline pipeline, rather than
     // ramp down from the previous control and stop an ulp away.
     #[test]
-    fn the_first_control_after_reset_applies_exactly() {
+    fn first_control_after_reset_applies() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/model/dpdfnet2_48khz_hr-w8a16");
         let mut p = AudioProcessor::new(Bundle::open(dir).unwrap()).unwrap();
         p.set_attenuation_db(0.0);

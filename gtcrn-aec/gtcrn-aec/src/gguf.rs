@@ -145,8 +145,8 @@ impl Gguf {
             if key == "general.alignment" {
                 alignment = usize::try_from(value.ok_or("invalid GGUF alignment type")?)
                     .map_err(|_| "GGUF alignment too large")?;
-                // GGUF requires a multiple of eight. This loader intentionally
-                // supports only the power-of-two subset, used by its rounding.
+                // GGUF requires a multiple of eight; the rounding below needs a
+                // power of two, so only those alignments load.
                 if !(8..=4096).contains(&alignment) || !alignment.is_power_of_two() {
                     return Err("unsupported GGUF alignment".into());
                 }
@@ -286,14 +286,14 @@ mod tests {
         assert_eq!((v.as_ptr() as usize) % std::mem::align_of::<f32>(), 0);
     }
     #[test]
-    fn every_truncation_is_an_error_not_a_panic() {
+    fn every_truncation_returns_an_error() {
         let b = minimal(0.25);
         for end in 0..b.len() {
             assert!(Gguf::parse(&b[..end]).is_err(), "{end}");
         }
     }
     #[test]
-    fn rejects_non_finite_unknown_versions_and_excess_counts() {
+    fn rejects_bad_values_versions_and_counts() {
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(Gguf::parse(&minimal(v)).is_err());
         }
@@ -305,7 +305,7 @@ mod tests {
         assert!(Gguf::parse(&b).is_err());
     }
     #[test]
-    fn cursor_rejects_unknown_types_and_nested_arrays() {
+    fn cursor_rejects_unknown_and_nested_types() {
         assert!(Cursor { b: &[], p: 0 }.value(99, false).is_err());
         assert!(Cursor { b: &[], p: 0 }.value(9, true).is_err());
         assert!(Cursor { b: &[2], p: 0 }.value(7, false).is_err());

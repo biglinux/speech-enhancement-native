@@ -150,20 +150,20 @@ fn read_wav(b: &[u8]) -> Result<Vec<f32>, String> {
     if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return Err("not a WAV file".into());
     }
-    let (mut fmt, mut data) = (None, None);
+    let (mut fmt, mut pcm) = (None, None);
     let mut pos = 12;
     while pos + 8 <= b.len() {
         let size = u32::from_le_bytes([b[pos + 4], b[pos + 5], b[pos + 6], b[pos + 7]]) as usize;
         let body = b.get(pos + 8..pos + 8 + size).ok_or("truncated chunk")?;
         match &b[pos..pos + 4] {
             b"fmt " => fmt = Some(body),
-            b"data" => data = Some(body),
+            b"data" => pcm = Some(body),
             _ => {}
         }
         pos += 8 + size + size % 2;
     }
     let fmt = fmt.filter(|f| f.len() >= 16).ok_or("no fmt chunk")?;
-    let data = data.ok_or("no data chunk")?;
+    let pcm = pcm.ok_or("no data chunk")?;
     let u16_at = |o: usize| u16::from_le_bytes([fmt[o], fmt[o + 1]]);
     let (tag, channels, bits) = (u16_at(0), u16_at(2), u16_at(14));
     let rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
@@ -174,13 +174,13 @@ fn read_wav(b: &[u8]) -> Result<Vec<f32>, String> {
         return Err(format!("{rate} Hz, the engine takes {SR} Hz"));
     }
     match (tag, bits) {
-        (1, 16) => Ok(data
+        (1, 16) => Ok(pcm
             .as_chunks::<2>()
             .0
             .iter()
             .map(|s| f32::from(i16::from_le_bytes(*s)) / 32768.0)
             .collect()),
-        (3, 32) => Ok(data
+        (3, 32) => Ok(pcm
             .as_chunks::<4>()
             .0
             .iter()

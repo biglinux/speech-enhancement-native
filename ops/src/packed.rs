@@ -502,7 +502,7 @@ mod tests {
     // Products through the packed layout equal the plain row-major product,
     // including activations past the exact-i32 bound that take the scalar path.
     #[test]
-    fn packed_products_equal_the_row_major_product() {
+    fn packed_matches_row_major_product() {
         for n in [2, 6, 64, 256, 512, 1024] {
             for m in [8, 24, 32, 64, 72, 192, 768, 1536] {
                 let w: Vec<i8> = (0..m * n).map(|i| ((i * 79 % 256) as u8) as i8).collect();
@@ -535,7 +535,7 @@ mod tests {
     // The dispatch only runs the host's tier, so call every kernel the host supports.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn every_tier_is_bit_identical_to_the_scalar_product() {
+    fn every_tier_matches_scalar_product() {
         let mut seed = 0x1234_5678_u32;
         let mut next = || {
             seed ^= seed << 13;

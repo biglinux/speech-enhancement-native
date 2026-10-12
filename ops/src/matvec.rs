@@ -209,7 +209,7 @@ mod tests {
     // Covers every tile boundary of both widths, and checks that nothing past `n`
     // is written.
     #[test]
-    fn every_tier_matches_its_reference_bit_for_bit() {
+    fn every_tier_matches_reference_bits() {
         for m in [0usize, 1, 3, 16, 64, 128, 256] {
             for n in [0usize, 1, 4, 7, 8, 15, 31, 32, 33, 63, 64, 65, 96, 130, 192] {
                 let a = values(m * n, 0);

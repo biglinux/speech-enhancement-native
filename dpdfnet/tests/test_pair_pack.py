@@ -55,7 +55,7 @@ def test_packing_mapping_and_roundtrip(rows, cols):
 
 
 @pytest.mark.parametrize("cols", [2, 6, 64, 256, 1024])
-def test_pair_sums_are_exact_with_int64_oracle(cols):
+def test_pair_sums_match_int64_oracle(cols):
     rows = 24
     _, _, w = fixture(rows, cols)
     rng = np.random.default_rng(cols)

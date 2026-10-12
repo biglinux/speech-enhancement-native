@@ -54,7 +54,7 @@ fn speech() -> Vec<f32> {
     .collect()
 }
 #[test]
-fn matches_the_ladspa_chain_with_any_thread_count() {
+fn matches_ladspa_chain_on_any_threads() {
     // Not a whole number of hops, long enough for every stage to be busy.
     let channels = [
         signal(25 * 48_000 + 123, 0.0),

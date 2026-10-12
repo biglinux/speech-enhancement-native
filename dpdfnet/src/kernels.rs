@@ -236,7 +236,7 @@ mod batch_tests {
     use super::*;
     use crate::test_support::{Writer, assert_bits};
     #[test]
-    fn single_batch_and_prequantized_have_identical_bits() {
+    fn batch_and_prequantized_bits_match() {
         for (m, n) in [(192, 64), (768, 256), (24, 6)] {
             let mut w = Writer::new();
             let v = w.matrix(m, n, true);

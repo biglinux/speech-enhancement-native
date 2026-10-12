@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn every_tier_matches_the_reference_on_ties_extremes_and_tails() {
+    fn every_tier_matches_reference_on_edges() {
         let mut data = vec![
             0.0,
             -0.0,
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn tiny_vectors_do_not_saturate_from_an_infinite_reciprocal() {
+    fn tiny_vectors_never_saturate() {
         let x = [1e-38f32, 0.5e-38, 0.0, -0.5e-38];
         let mut q = [0; 4];
         let scale = quantize_i16(&x, &mut q);

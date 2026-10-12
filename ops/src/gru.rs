@@ -408,7 +408,7 @@ mod tests {
     // The SSE4.1 and AVX gates must agree bit for bit, and both stay within the
     // polynomial error of the libm path.
     #[test]
-    fn every_tier_of_the_gate_update_agrees() {
+    fn gate_update_tiers_agree() {
         let mut seed = 0xc0ffee;
         for hs in [4usize, 8, 64, 256] {
             for _ in 0..50 {

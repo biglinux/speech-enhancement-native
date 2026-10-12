@@ -301,7 +301,7 @@ mod tests {
         );
     }
     #[test]
-    fn rejects_schema_1_with_a_repacking_hint() {
+    fn schema_1_gets_repacking_hint() {
         let mut m = bundle(&[0; 4]).manifest().unwrap();
         m["schema"] = serde_json::json!(1);
         let e = Bundle::from_bytes(&serde_json::to_vec(&m).unwrap(), &[0; 4]).err();
@@ -321,7 +321,7 @@ mod tests {
 mod view_tests {
     use super::*;
     #[test]
-    fn owned_views_survive_move_clone_and_cross_thread_drop() {
+    fn owned_views_survive_cross_thread_drop() {
         let words: Vec<f32> = (0..32).map(|i| i as f32 - 7.25).collect();
         let a = F32s::aligned_copy(&words);
         let a2 = a.clone();

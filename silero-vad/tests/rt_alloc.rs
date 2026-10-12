@@ -13,7 +13,7 @@ fn tone(n: usize) -> Vec<f32> {
 }
 
 #[test]
-fn feeding_and_gating_never_allocate_after_warm_up() {
+fn warm_gate_never_allocates() {
     for (block, firered) in [1usize, 128, 480, 1024, 4096]
         .into_iter()
         .flat_map(|b| [(b, false), (b, true)])

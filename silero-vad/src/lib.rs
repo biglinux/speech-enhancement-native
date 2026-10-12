@@ -268,7 +268,7 @@ const GATE_RESTART_CHUNKS: u32 = 1024;
 
 /// Speech probabilities that stay reliable over hours of audio.
 ///
-/// A model run for minutes over music or sound effects drifts until it no longer hears
+/// A model run for minutes over music or sound effects drifts until it stops hearing
 /// speech; the official ONNX model does the same. Two models restart in turn, half a
 /// period apart, and the one restarted longer ago answers: it always has between half a
 /// period and a period of context.
@@ -533,7 +533,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn silence_keeps_the_gate_closed_without_running_the_network() {
+    fn silence_skips_network_and_stays_closed() {
         let mut gate = VoiceGate::new(40.0, 4096);
         gate.feed(&vec![0.0; CHUNK_48K * 40]);
         assert_eq!(gate.decided, 40);
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn an_output_lag_of_lag_samples_always_finds_its_own_decisions() {
+    fn output_lag_finds_its_decisions() {
         let mut gate = VoiceGate::new(40.0, 1);
         for fed in 1..=CHUNK_48K * 6 {
             gate.feed(&[0.01 * (fed as f32 * 0.3).sin()]);
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn the_chunks_begin_at_the_sample_and_reach_32_ms_past_it() {
+    fn chunks_span_32_ms_from_sample() {
         let len = CHUNK_48K as i64;
         for t in 0..len * 4 {
             let (first, last) = VoiceGate::chunks(t);
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gate_made_before_its_depth_is_known_starts_closed() {
+    fn gate_without_depth_starts_closed() {
         // The plugins build the gate at instantiation and set the depth on first run.
         let mut gate = VoiceGate::new(0.0, 0);
         gate.set_depth(40.0);
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_sets_the_floor_and_sixty_mutes() {
+    fn depth_sets_floor_sixty_mutes() {
         let mut gate = VoiceGate::new(40.0, 0);
         assert!((gate.floor - 0.01).abs() < 1e-6);
         gate.set_depth(60.0);
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_closes_after_the_hold_of_consecutive_quiet_chunks() {
+    fn gate_closes_after_quiet_hold() {
         let mut gate = Hysteresis::new(OPEN_AT, CLOSE_BELOW);
         assert!(gate.step(0.9));
         assert!((0..HOLD_CHUNKS - 1).all(|_| gate.step(0.0)));

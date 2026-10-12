@@ -58,7 +58,7 @@ fn probabilities(audio16: &[f32]) -> Vec<f32> {
 }
 
 #[test]
-fn matches_the_official_model_over_thirty_seconds() {
+fn matches_official_model_over_thirty_seconds() {
     let got = probabilities(&signal(16_000));
     let want = expected("expected_16k.f32");
     assert_eq!(got.len(), want.len());
@@ -71,7 +71,7 @@ fn matches_the_official_model_over_thirty_seconds() {
 }
 
 #[test]
-fn decides_like_the_official_model_after_our_resampler() {
+fn decides_like_official_model_after_resampling() {
     // SciPy's resampler is zero-phase and ours is causal: drop our group delay, then
     // compare decisions, not digits, since the two low-pass filters still differ.
     let mut down = Down3::new(0);

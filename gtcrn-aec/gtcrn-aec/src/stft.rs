@@ -64,7 +64,7 @@ pub fn stft(sig: &[f32], wcos: &[f32], wsin: &[f32]) -> (Vec<f32>, Vec<f32>) {
 }
 
 /// One analysis frame: 512 samples (caller owns the sliding window) -> 257 re/im.
-/// No padding/envelope — the streaming caller does overlap-add. Matches the
+/// No padding or envelope: the streaming caller does overlap-add. Matches the
 /// reference `stft_frame` (window baked into `wcos`/`wsin`).
 pub fn stft_frame(fr: &[f32], wcos: &[f32], wsin: &[f32], re: &mut [f32], im: &mut [f32]) {
     for f in 0..N_FREQ {

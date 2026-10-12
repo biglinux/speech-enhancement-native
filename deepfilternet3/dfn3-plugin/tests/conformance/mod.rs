@@ -160,14 +160,14 @@ fn rates_other_than_48k_are_rejected() {
 }
 
 #[test]
-fn startup_mutes_the_first_second_then_speech_passes() {
+fn startup_mutes_the_first_second() {
     let out = run_with(&[], &speech());
     assert!(out[..48000].iter().all(|&v| v == 0.0));
     assert!(out[48000..72000].iter().any(|v| v.abs() > 0.01));
 }
 
 #[test]
-fn a_zero_startup_mute_passes_the_first_second() {
+fn zero_startup_mute_passes_everything() {
     let out = run_with(&[(POST_FILTER, 0.02), NO_STARTUP_MUTE], &speech()[..48000]);
     assert!(out.iter().all(|v| v.is_finite()));
     let peak = out.iter().fold(0.0f32, |a, v| a.max(v.abs()));
@@ -175,7 +175,7 @@ fn a_zero_startup_mute_passes_the_first_second() {
 }
 
 #[test]
-fn after_the_startup_mute_the_output_is_the_engine_output_one_hop_late() {
+fn output_is_engine_one_hop_late() {
     let input = speech();
     let out = run_with(&[], &input);
     let mut bare = vec![0.0; HOP - 1];
@@ -185,7 +185,7 @@ fn after_the_startup_mute_the_output_is_the_engine_output_one_hop_late() {
 }
 
 #[test]
-fn the_output_does_not_depend_on_the_block_size() {
+fn block_size_leaves_output_unchanged() {
     let input = noisy_speech();
     for gate in [GATE_OFF, GATE_ON] {
         let run = Run::new(&[(DEPTH, 20.0), gate]);
@@ -212,7 +212,7 @@ fn the_output_does_not_depend_on_the_block_size() {
 }
 
 #[test]
-fn every_control_port_tolerates_non_finite_values() {
+fn controls_tolerate_non_finite_values() {
     let input = noisy_speech();
     for v in [
         0.0f32,
@@ -229,7 +229,7 @@ fn every_control_port_tolerates_non_finite_values() {
 }
 
 #[test]
-fn a_non_finite_voice_gate_depth_mid_stream_keeps_the_output_finite() {
+fn non_finite_gate_depth_stays_finite() {
     let input = noisy_speech();
     let mut run = Run::new(&[GATE_ON, NO_STARTUP_MUTE]);
     run.activate();
@@ -242,7 +242,7 @@ fn a_non_finite_voice_gate_depth_mid_stream_keeps_the_output_finite() {
 }
 
 #[test]
-fn non_finite_and_huge_input_do_not_poison_the_state() {
+fn hostile_input_keeps_state_finite() {
     let mut input = noisy_speech();
     input[48_000 * 2 + 7] = f32::NAN;
     input[48_000 * 3] = f32::INFINITY;
@@ -262,7 +262,7 @@ fn non_finite_and_huge_input_do_not_poison_the_state() {
 }
 
 #[test]
-fn reactivation_restarts_the_stream_and_reapplies_unchanged_controls() {
+fn reactivation_restarts_with_same_controls() {
     let input = noisy_speech();
     for controls in [
         [(ATTEN, 0.0), GATE_OFF],
@@ -283,7 +283,7 @@ fn reactivation_restarts_the_stream_and_reapplies_unchanged_controls() {
 }
 
 #[test]
-fn a_run_before_activate_is_a_fresh_stream() {
+fn run_before_activate_starts_fresh() {
     let input = noisy_speech();
     let activated = run_with(&[GATE_ON], &input);
     let unactivated = Run::new(&[GATE_ON]).process(&input, 480, false);
@@ -291,7 +291,7 @@ fn a_run_before_activate_is_a_fresh_stream() {
 }
 
 #[test]
-fn zero_db_attenuation_passes_the_noise_and_100_db_removes_it() {
+fn attenuation_limit_sets_noise_removal() {
     let input = lcg_noise(480 * 300, 0.2);
     let energy =
         |out: Vec<f32>| -> f64 { out[480 * 100..].iter().map(|v| f64::from(*v).powi(2)).sum() };
@@ -316,7 +316,7 @@ fn lag(input: &[f32], output: &[f32]) -> usize {
 }
 
 #[test]
-fn the_latency_port_reports_the_delay_the_voice_gate_raises_to_its_lag() {
+fn latency_port_reports_gate_lag() {
     // Attenuation 0 passes the input through the analysis and synthesis unchanged,
     // so the correlation peak is the delay.
     let input = lcg_noise(48_000 * 3, 0.2);
@@ -330,7 +330,7 @@ fn the_latency_port_reports_the_delay_the_voice_gate_raises_to_its_lag() {
 }
 
 #[test]
-fn the_voice_gate_mutes_noise_and_keeps_speech() {
+fn voice_gate_keeps_only_speech() {
     let input = noisy_speech();
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
     let off = run_with(&[NO_STARTUP_MUTE, GATE_OFF], &input);
@@ -379,7 +379,7 @@ fn the_engine_suppresses_stationary_noise() {
 }
 
 #[test]
-fn speech_passes_again_after_long_noise_and_silence() {
+fn speech_passes_after_long_noise() {
     let speech = speech();
     let hops = speech.as_chunks::<HOP>().0;
     let mut e = Denoiser::<Net>::new();
@@ -419,7 +419,7 @@ fn speech_passes_again_after_long_noise_and_silence() {
 }
 
 #[test]
-fn digital_silence_skips_the_network_and_speech_resumes_at_once() {
+fn digital_silence_skips_the_network() {
     let speech = speech();
     let hops = speech.as_chunks::<HOP>().0;
     let mut e = Denoiser::<Net>::new();
@@ -538,7 +538,7 @@ fn hint_default(port: c_ulong) -> f32 {
 }
 
 #[test]
-fn the_engine_defaults_are_the_port_defaults() {
+fn engine_defaults_match_port_defaults() {
     // A host that leaves a control unconnected gets the engine's value, one that
     // applies the hints gets the hint's: both must be the same setting.
     let e = Denoiser::<Net>::new();

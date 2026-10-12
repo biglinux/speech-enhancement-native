@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalVQE runner (ggml CLI) — DeepVQE-derived neural AEC, 16 kHz.
+"""LocalVQE runner (ggml CLI): DeepVQE-derived neural AEC, 16 kHz.
 
   python3 run_localvqe.py --bin <localvqe> --model <gguf> --name <label> \
       --testset <ts> --out <dir>

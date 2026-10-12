@@ -366,7 +366,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_latency_port_reports_the_delay_an_impulse_shows() {
+    fn latency_port_matches_impulse_delay() {
         for sr in [44_100, 48_000, 96_000] {
             let mut audio = vec![0.0f32; 1024];
             audio[10] = 0.5;
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_is_attenuated_before_it_reaches_the_output() {
+    fn transient_attenuated_before_output() {
         let mut lim = Limiter::new(48_000.0, -1.0, 0.5);
         let n = 2048;
         let look = lim.look;
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gain_ramps_down_over_the_lookahead_instead_of_stepping() {
+    fn gain_ramps_over_the_lookahead() {
         let mut lim = Limiter::new(48_000.0, -1.0, 0.5);
         let look = lim.look;
         let mut input = vec![0.1f32; 2048];
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn strictly_decreasing_window_never_grows_the_deque() {
+    fn decreasing_window_keeps_deque_capacity() {
         let mut limiter = Limiter::new(48_000.0, -1.0, 0.2);
         let capacity = limiter.mags.capacity();
         // A decreasing signal retains every candidate until it expires.
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn nonfinite_audio_does_not_poison_the_history() {
+    fn nonfinite_audio_keeps_history_finite() {
         let mut limiter = Limiter::new(48_000.0, -1.0, 0.2);
         for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(limiter.process_sample(x).is_finite());

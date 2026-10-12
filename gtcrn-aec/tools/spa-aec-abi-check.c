@@ -4,7 +4,7 @@
  *   gtcrn-aec/tools/spa-aec-abi-check.c -ldl -o spa-aec-abi-check
  * ./spa-aec-abi-check target/release/libspa_aec_gtcrn.so
  */
-/* spa/utils/string.h uses locale_t (newlocale) — requires _GNU_SOURCE. */
+/* spa/utils/string.h uses locale_t (newlocale), which needs _GNU_SOURCE. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif

@@ -47,7 +47,7 @@ fn fixed_io(n: usize) -> (Vec<f32>, Vec<f32>) {
 }
 
 #[test]
-fn daf_process_is_alloc_free_after_warmup() {
+fn warm_daf_process_never_allocates() {
     let m = model();
     let mut daf = Daf::new(&m.w).expect("daf");
     let block = 128;
@@ -69,7 +69,7 @@ fn daf_process_is_alloc_free_after_warmup() {
 }
 
 #[test]
-fn process_hop_is_alloc_free_after_warmup() {
+fn warm_process_hop_never_allocates() {
     let m = model();
     let mut s = Streamer::new(&m).unwrap();
     let (mic, reference) = fixed_io(HOP * 270);
@@ -88,7 +88,7 @@ fn process_hop_is_alloc_free_after_warmup() {
 // The plugin builds the streamer on the main thread and PipeWire runs it on the
 // data thread, so its scratch must belong to the instance, not to a thread.
 #[test]
-fn first_hops_on_another_thread_are_alloc_free() {
+fn other_thread_first_hops_never_allocate() {
     let m = model();
     let mut s = Streamer::new(&m).unwrap();
     let (mic, reference) = fixed_io(HOP * 170);

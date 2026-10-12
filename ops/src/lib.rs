@@ -118,7 +118,7 @@ pub fn relu_inplace(x: &mut [f32]) {
 }
 
 /// Best-effort page-lock of a slice so it cannot be swapped or evicted during
-/// realtime processing. A page fault in the audio callback costs milliseconds —
+/// realtime processing. A page fault in the audio callback costs milliseconds,
 /// a guaranteed xrun; locking the weights removes that worst case under memory
 /// pressure. Failure (e.g. a low `RLIMIT_MEMLOCK`) is ignored: the plugin still
 /// runs, just without the guarantee.
@@ -412,7 +412,7 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn denormal_guard_restores_the_callers_fp_environment() {
+    fn denormal_guard_restores_fp_environment() {
         let before = read_mxcsr();
         {
             let _guard = DenormalGuard::new();

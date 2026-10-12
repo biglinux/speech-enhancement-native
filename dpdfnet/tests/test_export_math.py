@@ -255,7 +255,7 @@ def test_reflected_nyquist_is_penultimate_bin():
     assert y.reshape(-1)[480] == 478
 
 
-def test_python_alpha_complement_not_recomputed_in_f32():
+def test_alpha_complement_rounds_independently():
     # PyTorch receives independently rounded scalar constants alpha and (1-alpha).
     alpha = 0.98
     a = np.float32(alpha)
@@ -330,7 +330,7 @@ def test_no_fusion_through_activation():
     assert len(config["ops"]) == 2 and ex.fused_depthwise_pointwise_pairs == 0
 
 
-def test_tiny_activation_reciprocal_does_not_saturate():
+def test_tiny_activations_quantize_finitely():
     x = np.array([1e-38, 0.5e-38, 0, -0.5e-38], np.float32)
     q, scale = activation_quant(x)
     assert np.isfinite(scale) and scale > 0

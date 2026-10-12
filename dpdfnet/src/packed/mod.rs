@@ -275,7 +275,7 @@ mod tests {
         }
     }
     #[test]
-    fn pair_packing_and_all_supported_tiers_are_exact() {
+    fn every_tier_packs_pairs_exactly() {
         for n in [2, 6, 16, 64, 256, 1024] {
             for m in [8, 24, 32, 64, 72, 192, 768] {
                 check::<1>(m, n, false);

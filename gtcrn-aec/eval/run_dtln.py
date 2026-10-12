@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DTLN-aec runner (LiteRT/tflite) — two-stage stateful LSTM AEC, 16 kHz only.
+"""DTLN-aec runner (LiteRT/tflite): two-stage stateful LSTM AEC, 16 kHz only.
 
 Replicates the reference frame loop from breizhn/DTLN-aec run_aec.py: 512-sample
 block / 128 hop, stage-1 predicts an STFT-magnitude mask, stage-2 refines in a

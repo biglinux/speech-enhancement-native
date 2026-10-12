@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_tensor_is_rejected_at_load() {
+    fn missing_tensor_fails_to_load() {
         let mut map = schema_map();
         map.remove("stft.wcos");
         let err = validate_schema(|n| map.get(n).cloned()).unwrap_err();
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn a_misshaped_tensor_is_rejected_at_load() {
+    fn misshaped_tensor_fails_to_load() {
         let mut map = schema_map();
         map.insert("stft.wcos".into(), vec![1, 2]);
         let err = validate_schema(|n| map.get(n).cloned()).unwrap_err();
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_shape_compatible_but_semantically_wrong_model() {
+    fn semantically_wrong_model_fails_to_load() {
         let mut geometry = Geometry {
             n_fft: 512,
             hop: 256,

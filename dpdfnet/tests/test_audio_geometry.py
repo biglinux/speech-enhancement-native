@@ -5,7 +5,7 @@ import pytest
 
 
 @pytest.mark.parametrize("length", [1, 479, 480, 481, 8191])
-def test_pcm_framing_and_four_hop_dry_delay(length):
+def test_pcm_framing_and_dry_delay(length):
     n = 960
     hop = 480
     delay = 6 * hop

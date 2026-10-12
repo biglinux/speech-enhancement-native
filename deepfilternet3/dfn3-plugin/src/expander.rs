@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_silence_deepens_to_a_full_mute() {
+    fn long_silence_deepens_to_mute() {
         // A brief gap keeps the finite duck; a sustained silence is muted fully,
         // removing the low-level residual that -depth dB alone leaves audible.
         let mut ex = SilenceExpander::new();
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_click_in_deep_silence_stays_muted() {
+    fn lone_click_in_silence_stays_muted() {
         // Settle into a deep, fully-muted silence, then fire a one-hop impulse
         // that trips the LSNR (a mouse click): it must not reopen the gate.
         let mut ex = SilenceExpander::new();
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn post_speech_noise_is_ducked_by_the_depth() {
+    fn post_speech_noise_is_ducked() {
         // Once LSNR drops below the gate and the speech hold expires, the
         // residual is attenuated toward the finite depth.
         let mut ex = SilenceExpander::new();
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_brief_gap_between_words_is_held_not_chopped() {
+    fn brief_word_gap_is_held() {
         // A short dip below the gate (a gap between words) stays within the hold,
         // so the next word passes at unity instead of being ducked.
         let mut ex = SilenceExpander::new();

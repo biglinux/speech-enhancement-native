@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn depthwise_tiers_are_bit_identical_to_the_scalar_loop() {
+    fn depthwise_tiers_match_scalar_bits() {
         let mut r = Lcg(0xdeed_beef_0bad_c0de);
         // co covers 8-wide and 4-wide tiles with and without a remainder; spacing
         // and offset interleave the positions the way the DPDFNet encoder does.
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "depthwise_1x3: output too short")]
-    fn depthwise_rejects_a_short_output_before_dispatch() {
+    fn depthwise_rejects_short_output() {
         let mut out = vec![0.0; 63];
         depthwise_1x3(
             &mut out, &[0.0; 64], &[0.0; 24], &[0.0; 8], 8, 8, 8, 1, 1, 8, 0,
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "depthwise_1x3: input too short")]
-    fn depthwise_rejects_a_short_input_before_dispatch() {
+    fn depthwise_rejects_short_input() {
         let mut out = vec![0.0; 64];
         depthwise_1x3(
             &mut out, &[0.0; 63], &[0.0; 24], &[0.0; 8], 8, 8, 8, 1, 1, 8, 0,
@@ -456,7 +456,7 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx_pointwise_is_bit_identical_to_the_scalar_loop() {
+    fn avx_pointwise_matches_scalar_bits() {
         if !is_x86_feature_detected!("avx") {
             return;
         }

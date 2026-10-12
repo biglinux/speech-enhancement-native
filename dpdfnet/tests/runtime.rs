@@ -64,7 +64,7 @@ fn reset_is_equivalent_to_new_instance() {
     assert_eq!(y, reference);
 }
 #[test]
-fn invalid_samples_do_not_poison_the_state() {
+fn invalid_samples_keep_state_clean() {
     let b = load();
     let mut p = AudioProcessor::new(b).unwrap();
     let mut x = signal(5000);

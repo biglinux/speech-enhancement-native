@@ -48,8 +48,8 @@ def process(mic: np.ndarray, ref: np.ndarray, rate: int, use_pre: bool) -> np.nd
     lib.speex_echo_ctl(st, SPEEX_ECHO_SET_SAMPLING_RATE, C.byref(r))
     pre = None
     if use_pre:
-        # Residual echo suppression only — denoise/AGC left at library defaults; the
-        # baseline runs without this (plan §7.1: SpeexDSP sem preprocessor residual).
+        # Residual echo suppression only: denoise and AGC keep the library defaults.
+        # The baseline runs without the preprocessor.
         pre = lib.speex_preprocess_state_init(frame, rate)
         lib.speex_preprocess_ctl(
             pre, SPEEX_PREPROCESS_SET_ECHO_STATE, C.cast(st, C.c_void_p)

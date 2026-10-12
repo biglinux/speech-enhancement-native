@@ -336,7 +336,7 @@ mod tests {
         }
     }
     #[test]
-    fn frozen_filter_tracks_render_power_without_changing_weights() {
+    fn frozen_filter_still_tracks_render_power() {
         let mut h = HbAec::new(256, 4);
         let mic = [0.0; 256];
         let render = [0.125; 256];
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn normalization_covers_current_partition_energy_at_onset() {
+    fn normalization_includes_onset_partition_energy() {
         let mut h = HbAec::new(256, 4);
         let mic = [0.0; 256];
         let mut render = [0.0; 256];

@@ -108,7 +108,8 @@ impl Front {
             let re = self.scaled[2 * f];
             let im = self.scaled[2 * f + 1];
             let mag = (re * re + im * im).sqrt();
-            // Upstream deliberately uses 10*log10(magnitude + 1e-10), not 20*log10.
+            // 10*log10 of the magnitude, as upstream computes it; 20*log10 would
+            // not match the trained model.
             let db = 10.0 * (mag + 1e-10).log10();
             self.mu[f] = self.alpha * self.mu[f] + self.beta * db;
             self.mag[f] = (db - self.mu[f]) / (40.0 + self.eps);
@@ -574,7 +575,8 @@ impl Stage {
             }
         }
     }
-    /// Microseconds per hop on an i5-13400 P-core, for grouping stages onto threads.
+    /// A stage's cost per hop, used only to weigh stages against each other when
+    /// grouping them onto threads; the timings are in docs/dpdfnet.md.
     pub(crate) fn cost(&self) -> u32 {
         match self {
             Stage::Front(_) => 74,

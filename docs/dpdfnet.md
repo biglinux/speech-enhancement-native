@@ -204,6 +204,10 @@ E-cores or hyperthreads and are slower.
 | i3-2375M, 1 min stereo | 53.3 s | 28.0 s (2 threads) |
 | i3-2375M, 1 min mono | 26.6 s | 15.4 s |
 
+Per hop on an i5-13400 P-core, the stages take: front 74 µs, ERB block 85 µs,
+DF block 100 µs, decoder 60 µs, high-band mask 54 µs and low-band mask 75 µs.
+The scheduler groups stages onto threads by these figures.
+
 With 6 stage threads the slowest group is the front with the first ERB block,
 159 µs a hop against 106 µs for a perfect split; finer stages would need the
 DPRNN blocks cut into their spectral and temporal halves. Memory stays near
