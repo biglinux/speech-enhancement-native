@@ -1,7 +1,8 @@
 //! Fuzzes a DeepFilterNet3 plugin's `run()` the way a host drives it: any block
 //! size, separate or in-place buffers, run before activate, reactivation, hostile
-//! control values (the voice detector and sensitivity too) and NaN/inf audio. The output must stay finite. Each plugin's
-//! fuzz crate builds this file against its own descriptor, as `plugin`.
+//! control values (the voice detector and sensitivity too) and NaN/inf audio. The
+//! output must stay finite. Each plugin's fuzz crate builds this file against its
+//! own descriptor, as `plugin`.
 //!
 //! Input: the block size (u16 LE), flags, one selector per input control, then the
 //! audio as f32 LE.

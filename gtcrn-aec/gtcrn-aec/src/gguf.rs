@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 const GGUF_MAGIC: u32 = 0x4655_4747;
-// Deliberate limits for the compact GTCRN model, not a general GGUF implementation.
+// Limits sized for the compact GTCRN model, not a general GGUF implementation.
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 4096;
 const MAX_STRING: usize = 65536;

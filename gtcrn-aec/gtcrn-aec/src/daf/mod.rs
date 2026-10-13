@@ -27,7 +27,8 @@ const G_NFFT: usize = 32768;
 const G_MAXLAG: usize = 16384;
 const G_CONF_THR: f32 = 8.0;
 const LOCK_AFTER: i64 = 56000;
-/// GCC-PHAT steps per DAF block while an observation runs, about 60 µs.
+/// GCC-PHAT steps per DAF block while an observation runs, so no callback
+/// carries more than a small share of one.
 const GCC_STEPS_PER_BLOCK: usize = 4;
 /// Samples between the block that starts an observation and the block that
 /// applies its result (18 blocks, 144 ms). Windows close this much earlier

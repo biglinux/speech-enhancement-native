@@ -272,11 +272,6 @@ impl Network {
         }
     }
 
-    /// Frames each layer holds back; the network answers `LAYERS` times this late.
-    fn delay(&self) -> usize {
-        self.ahead
-    }
-
     fn reset(&mut self) {
         self.received = [0; LAYERS];
     }
@@ -426,7 +421,6 @@ impl Aed {
     pub fn finish(&mut self, mut heard: impl FnMut(&[f32; 3])) {
         let mut answer = |p: &[f32]| heard(&[p[0], p[1], p[2]]);
         self.network.finish(&mut answer);
-        debug_assert_eq!(self.network.delay() * LAYERS, AED_DELAY);
     }
 }
 

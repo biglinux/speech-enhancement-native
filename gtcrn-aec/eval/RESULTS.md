@@ -1,11 +1,10 @@
 # AEC candidates on a synthetic 16 kHz test set
 
-Measured on 2026-09-28 with the code of the commit that added GTCRN-AEC; the CPU
-and the source clips were not recorded. The `localvqe_*` rows are the
-LocalVQE ggml CLI running each GGUF over whole files at 16 kHz. They measure
-the network the plugin ports, not the Rust port itself and not the shipped
-plugin, which runs at 48 kHz and adds a separate filter above 8 kHz
-(`docs/gtcrn-aec.md`).
+Measured on 2026-09-28; the CPU and the source clips were not recorded. The
+`localvqe_*` rows are the LocalVQE ggml CLI running each GGUF over whole files
+at 16 kHz. They measure the network the plugin ports, not the Rust port itself
+and not the shipped plugin, which runs at 48 kHz and adds a separate filter
+above 8 kHz (`docs/gtcrn-aec.md`).
 
 <!-- aggregate:start -->
 ```

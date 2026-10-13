@@ -1,5 +1,6 @@
-//! GTCRN-AEC core forward, a scalar Rust port of LocalVQE `gtcrn.cpp`. Input: two spectra `spec_e` (near/error) and `spec_y`
-//! (far reference), each `(257, T, 2)` row-major; output: masked `spec_e`.
+//! GTCRN-AEC core forward, a scalar Rust port of LocalVQE `gtcrn.cpp`. Input:
+//! two spectra `spec_e` (near/error) and `spec_y` (far reference), each
+//! `(257, T, 2)` row-major; output: masked `spec_e`.
 //!
 //! GGUF stores tensor dims fastest-first, reversed from PyTorch/numpy, over the
 //! same byte layout: a weight slice is indexed with numpy strides, and its numpy

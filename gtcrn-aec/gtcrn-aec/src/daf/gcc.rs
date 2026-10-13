@@ -1,7 +1,7 @@
 //! GCC-PHAT coarse delay estimate between the microphone and the reference.
 //!
-//! One observation costs three 32768-point real FFTs, about 1 ms. To keep that
-//! out of a single audio callback, an observation is a job of `STEPS` steps of
+//! One observation costs three 32768-point real FFTs, too much for a single
+//! audio callback. To spread it, an observation is a job of `STEPS` steps of
 //! similar cost (a butterfly stage, or a quarter of a linear pass), which the
 //! stream advances a fixed number of steps per DAF block. Its result lands a
 //! fixed number of blocks after the window closed, whatever the host block size.

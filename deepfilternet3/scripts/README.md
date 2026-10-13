@@ -21,7 +21,7 @@ Only the GRU projection matrices (`*_gru<n>_W` / `*_gru<n>_R`, shape
 `[3*HID, HID]`) are quantized. They hold about 94% of the multiply-adds and are
 the memory-bound part. Each is quantized per output row, symmetric int8:
 
-```
+```text
 scale[i] = max(|w[i,:]|) / 127
 q[i,j]   = round(w[i,j] / scale[i])   clamped to [-127, 127]
 ```
@@ -29,7 +29,7 @@ q[i,j]   = round(w[i,j] / scale[i])   clamped to [-127, 127]
 Everything else (convolutions, grouped linears, biases) stays f32. At run time the
 product is exact in integers (`ops::gru_cell_packed`, `pmaddwd`):
 
-```
+```text
 y[i] = (Σ q[i,j] · xq[j]) · scale[i] · xscale
 ```
 

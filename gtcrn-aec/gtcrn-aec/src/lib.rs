@@ -506,7 +506,7 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         // The batch and streaming kernels round differently, so the
-        // bound is relative to the output peak; measured ~8e-7.
+        // bound is relative to the output peak.
         let peak = want.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(
             max <= 1e-5 * peak,

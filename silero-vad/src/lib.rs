@@ -1,8 +1,8 @@
 //! The Silero VAD 16 kHz model (snakers4/silero-vad 6.2.3, MIT) run natively, and the
 //! voice gate built on it or, by choice, on the FireRedVAD streaming model.
 //!
-//! DeepFilterNet3 lets short bursts of noise through while nobody speaks. The gate mutes
-//! the denoiser's output whenever the detector hears no speech in the *raw* input: deciding
+//! The denoisers let short bursts of noise through while nobody speaks. The gate mutes
+//! the denoiser's output whenever the detector hears no speech in the raw input: deciding
 //! on the denoised signal mistakes those same bursts for speech.
 //!
 //! The network is small (~0.68 M multiply-adds per 32 ms), so it runs in f32: a recurrent

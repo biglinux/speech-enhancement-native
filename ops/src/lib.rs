@@ -173,7 +173,7 @@ pub fn vdot(a: &[f32], b: &[f32]) -> f32 {
 /// 1 = SSE4.1 (pre-AVX Core 2, Atom-class Celeron/Pentium), 0 = scalar. The int8
 /// GEMV only needs SSE4.1, so tier 1 keeps cheap no-AVX CPUs off the scalar path.
 ///
-/// Tier 3 checks AVX2 *and* FMA: they are independent features and its kernels
+/// Tier 3 checks both AVX2 and FMA: they are independent features and its kernels
 /// need both. The `force-sse41` and `force-avx1` diagnostic features cap the tier
 /// to compare tiers on one machine.
 #[cfg(target_arch = "x86_64")]

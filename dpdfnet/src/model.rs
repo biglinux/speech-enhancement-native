@@ -635,9 +635,10 @@ mod tests {
         let mut d = DeepFilter::new();
         let m = vec![1.0; BINS];
         let mut c = vec![0.0; COEFS];
+        // The center tap; the coefficient history starts at zero for two frames.
         for f in 0..DF_BINS {
             c[f * 10 + 4] = 1.0;
-        } // center tap; coefficients start zero for 2 frames
+        }
         let mut out = vec![0.0; BINS * 2];
         for n in 1i32..20 {
             let x = vec![n as f32; BINS * 2];
