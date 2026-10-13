@@ -149,7 +149,8 @@ ffmpeg -i in.m4a -ar 48000 -f f32le - |
 ```
 
 `--channels` is 1 to 64 (default 1), `--attenuation` 0 to 100 dB (default
-100), `--threads` 1 to 256 stage threads (default below); `--help` lists them.
+100), `--threads` 1 to 256 stage threads (default below), `--voice-sensitivity`
+1 to 5 (default 3, with `--speech-only`); `--help` lists them.
 
 `--speech-only` silences what is not a voice, for the converters' pause finder.
 DPDFNet lets music and sound effects through as if they were a voice; the
@@ -157,12 +158,21 @@ DPDFNet lets music and sound effects through as if they were a voice; the
 hears each channel's raw input and its enhanced output. A frame's probability is
 the raw input's speech or singing and, while the raw input does not sound like
 music (below 0.3), the enhanced output's speech, which noise cannot bury; each is
-a five-frame average. A frame is voice from 0.5 until 320 ms in a row stay below
-0.25. The second before and the half second after a voice are kept: a word's
+a five-frame average. A frame is voice from the probability the voice
+sensitivity sets, higher for singing alone (guitars and synths reach 0.7 as
+singing), until 320 ms in a row stay below 0.25:
+
+| Sensitivity | 1 | 2 | 3 | 4 | 5 |
+|---|---:|---:|---:|---:|---:|
+| Speech opens at | 0.10 | 0.20 | 0.25 | 0.40 | 0.60 |
+| Singing alone opens at | 0.75 | 0.80 | 0.85 | 0.90 | 0.95 |
+
+The second before and the half second after a voice are kept: a word's
 onset is heard late and its fading tail not at all. The output still has the
 input's length.
 
-On three 10-minute excerpts of a 5.1 film mix, with the dialogue taken from the
+Measured with speech opening at 0.5, between sensitivities 4 and 5, on three
+10-minute excerpts of a 5.1 film mix, with the dialogue taken from the
 center channel within the subtitle times and the pauses found as the converter
 does, the enhanced audio alone keeps 97.4% of the dialogue and passes 493 s of
 the 30 minutes of score and effects alone as speech; with `--speech-only` it

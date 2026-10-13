@@ -81,7 +81,9 @@ const VOICE_GATE: usize = ANCHORS + NUM_ANCHORS;
 const LATENCY: usize = VOICE_GATE + 1;
 /// 0 hears with Silero, 1 with FireRedVAD's streaming model.
 const VOICE_DETECTOR: usize = LATENCY + 1;
-const PORT_COUNT: usize = VOICE_DETECTOR + 1;
+/// The voice gate's sensitivity level, 1 to 5 (`VoiceGate::set_sensitivity`).
+const VOICE_SENSITIVITY: usize = VOICE_DETECTOR + 1;
+const PORT_COUNT: usize = VOICE_SENSITIVITY + 1;
 
 /// Input samples are clamped to ±8 (+18 dBFS): anything beyond is not audio.
 const MAX_INPUT: f32 = 8.0;
@@ -117,6 +119,7 @@ const NAMES: [&CStr; PORT_COUNT] = [
     c"Voice gate depth (dB)",
     c"latency",
     c"Voice detector (0 Silero, 1 FireRedVAD)",
+    c"Voice sensitivity (1 sensitive, 3 normal, 5 strict)",
 ];
 
 struct Names([*const c_char; PORT_COUNT]);
@@ -181,6 +184,12 @@ static PORT_HINTS: [PortRangeHint; PORT_COUNT] = {
         hint_descriptor: HINT_BOUNDED | HINT_INTEGER | DEFAULT_MINIMUM,
         lower: 0.0,
         upper: 1.0,
+    };
+    // 3, the normal level; read every run, so it follows a live change.
+    h[VOICE_SENSITIVITY] = PortRangeHint {
+        hint_descriptor: HINT_BOUNDED | HINT_INTEGER | DEFAULT_MIDDLE,
+        lower: 1.0,
+        upper: 5.0,
     };
     h
 };
@@ -382,6 +391,10 @@ unsafe extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
     }
     if let Some(v) = inst.control(MAX_DB_DF) {
         inst.eng.max_db_df = v;
+    }
+    if let Some(level) = inst.control(VOICE_SENSITIVITY) {
+        inst.gate
+            .set_sensitivity(level.round().clamp(1.0, 5.0) as u8);
     }
     let gate_db = inst.control(VOICE_GATE).map_or(0.0, |v| v.max(0.0));
     // Read once, so a live control change neither restarts the mute nor changes

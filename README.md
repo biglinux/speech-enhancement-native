@@ -24,7 +24,8 @@ tier.
 
 All plugins take 48 kHz mono and accept any host block size. Both DeepFilterNet3
 plugins include a voice gate that mutes the output while nobody speaks, with
-Silero or, by choice, FireRedVAD as its detector. It is on by default and raises
+Silero or, by choice, FireRedVAD as its detector, at one of five sensitivity
+levels. It is on by default and raises
 the latency of both engines to 66 ms, from 40 ms for DeepFilterNet3 and 20 ms for
 DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
 Each LADSPA plugin reports its current delay, in samples, on an output control

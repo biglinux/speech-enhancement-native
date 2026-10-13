@@ -1,6 +1,6 @@
 //! Fuzzes a DeepFilterNet3 plugin's `run()` the way a host drives it: any block
 //! size, separate or in-place buffers, run before activate, reactivation, hostile
-//! control values (the voice detector choice too) and NaN/inf audio. The output must stay finite. Each plugin's
+//! control values (the voice detector and sensitivity too) and NaN/inf audio. The output must stay finite. Each plugin's
 //! fuzz crate builds this file against its own descriptor, as `plugin`.
 //!
 //! Input: the block size (u16 LE), flags, one selector per input control, then the
@@ -10,9 +10,9 @@
 use libfuzzer_sys::fuzz_target;
 use std::os::raw::c_ulong;
 
-/// Every input control: the voice detector choice follows the latency output.
-const CONTROL_PORTS: [usize; 19] = [
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21,
+/// Every input control: the voice detector and sensitivity follow the latency output.
+const CONTROL_PORTS: [usize; 20] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22,
 ];
 const LATENCY: c_ulong = 20;
 const HEADER: usize = 3 + CONTROL_PORTS.len();

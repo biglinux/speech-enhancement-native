@@ -3,6 +3,7 @@
 //! `tests/conformance.rs` includes this module next to its `Net`, `DESCRIPTOR` and
 //! `ENGINE_DELAY`. (Both plugins cannot share one test binary: each exports
 //! `ladspa_descriptor`.)
+use std::ffi::CStr;
 use std::os::raw::c_ulong;
 
 use super::{DESCRIPTOR, ENGINE_DELAY, Net};
@@ -22,6 +23,7 @@ const POST_FILTER: c_ulong = 7;
 const STARTUP_MS: c_ulong = 8;
 const VOICE_GATE: c_ulong = 19;
 const LATENCY: c_ulong = 20;
+const VOICE_SENSITIVITY: c_ulong = 22;
 const GATE_ON: (c_ulong, f32) = (VOICE_GATE, 40.0);
 const GATE_OFF: (c_ulong, f32) = (VOICE_GATE, 0.0);
 const NO_STARTUP_MUTE: (c_ulong, f32) = (STARTUP_MS, 0.0);
@@ -345,6 +347,37 @@ fn voice_gate_keeps_only_speech() {
     assert!(kept > 0.9, "speech energy kept {kept}");
 }
 
+#[test]
+fn voice_sensitivity_sets_gate_opening() {
+    // Attenuation 0 leaves the noise to the gate alone.
+    let input = noisy_speech();
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let quiet = 24_000..96_000 - 4_000;
+    let noise_at = |level: f32| {
+        let out = run_with(
+            &[
+                (ATTEN, 0.0),
+                NO_STARTUP_MUTE,
+                GATE_ON,
+                (VOICE_SENSITIVITY, level),
+            ],
+            &input,
+        );
+        rms(&out[quiet.clone()])
+    };
+    let (sensitive, strict) = (noise_at(1.0), noise_at(5.0));
+    assert!(sensitive > strict, "level 1 {sensitive}, level 5 {strict}");
+}
+
+#[test]
+fn voice_sensitivity_port_is_last() {
+    assert_eq!(DESCRIPTOR.port_count, VOICE_SENSITIVITY + 1);
+    // SAFETY: `port_names` has `port_count` entries, each a C string.
+    let name = unsafe { CStr::from_ptr(*DESCRIPTOR.port_names.add(VOICE_SENSITIVITY as usize)) };
+    assert_eq!(name, c"Voice sensitivity (1 sensitive, 3 normal, 5 strict)");
+    assert_eq!(hint_default(VOICE_SENSITIVITY), 3.0);
+}
+
 fn lcg(seed: &mut u32) -> f32 {
     *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
     (*seed >> 9) as f32 / 8_388_608.0 - 1.0
@@ -502,7 +535,12 @@ fn run_never_allocates() {
     let input = noisy_speech();
     for block in [1usize, 480, 1024, 16384] {
         for gate in [GATE_OFF, GATE_ON] {
-            let run = Run::new(&[gate, (DEPTH, 20.0), (LATENCY, 0.0)]);
+            let run = Run::new(&[
+                gate,
+                (DEPTH, 20.0),
+                (LATENCY, 0.0),
+                (VOICE_SENSITIVITY, 5.0),
+            ]);
             run.activate();
             let (connect, plugin_run) = (run.d.connect_port.unwrap(), run.d.run.unwrap());
             let mut buf = vec![0.0f32; block];

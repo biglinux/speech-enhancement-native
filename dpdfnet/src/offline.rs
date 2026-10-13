@@ -10,7 +10,8 @@
 //! backwards, the lead-in the converters put in front of the plugin.
 //!
 //! With `speech_only`, the writer also hears the raw input and keeps the enhanced
-//! audio only where speech is heard ([`SpeechOnly`]), for finding pauses.
+//! audio only where speech is heard ([`SpeechOnly`], at the sensitivity level it
+//! gives), for finding pauses.
 use crate::{
     AudioProcessor, Bundle, HOP, Result,
     audio::{Analysis, LATENCY, Synthesis, bounded_input},
@@ -56,10 +57,13 @@ pub fn enhance(
     channels: usize,
     threads: usize,
     attenuation_db: f32,
-    speech_only: bool,
+    speech_only: Option<u8>,
 ) -> Result<()> {
     if channels == 0 || threads == 0 {
         return Err("channels and threads must be at least 1".into());
+    }
+    if speech_only.is_some_and(|level| !(1..=5).contains(&level)) {
+        return Err("the voice sensitivity must be 1 to 5".into());
     }
     let groups = (threads / channels).max(1);
     let cpus = stage_cpus().0;
@@ -90,14 +94,16 @@ pub fn enhance(
         drop(out_tx);
         // Unbounded: the stages bound how far the reader runs ahead.
         let (raw_tx, raw_rx) = mpsc::channel();
-        let raw_tx = speech_only.then_some(raw_tx);
+        let raw_tx = speech_only.is_some().then_some(raw_tx);
         scope.spawn(move || {
             if let Err(e) = read(input, &feeds, raw_tx.as_ref()) {
                 let _ = errors.send(Err(e));
             }
         });
-        let speech = speech_only.then(|| Speech {
-            filters: (0..channels).map(|_| SpeechOnly::new()).collect(),
+        let speech = speech_only.map(|level| Speech {
+            filters: (0..channels)
+                .map(|_| SpeechOnly::with_sensitivity(level))
+                .collect(),
             raw: vec![VecDeque::new(); channels],
             blocks: raw_rx,
         });

@@ -8,13 +8,16 @@ use std::{io::IsTerminal, process::ExitCode};
 
 const USAGE: &str = "\
 usage: dpdfnet-enhance [--channels N] [--threads N] [--attenuation DB] [--speech-only]
-                       < f32le > f32le
+                       [--voice-sensitivity N] < f32le > f32le
 
   --channels N      interleaved channels, 1-64 (default 1)
   --threads N       stage threads, 1-256 (default: cores of the fastest kind)
   --attenuation DB  0 keeps the input, 100 removes all noise (default 100)
   --speech-only     silence what the voice detector does not hear as speech,
                     to find the pauses between words
+  --voice-sensitivity N
+                    with --speech-only, 1-5: 1 keeps the faintest voice,
+                    5 only a clear one (default 3)
 
 The model is read from $DPDFNET_NATIVE_MODEL, else the installed bundle.";
 
@@ -22,7 +25,8 @@ struct Options {
     channels: usize,
     threads: usize,
     attenuation: f32,
-    speech_only: bool,
+    /// The voice sensitivity level, with `--speech-only`.
+    speech_only: Option<u8>,
 }
 
 fn value<T: std::str::FromStr>(
@@ -40,6 +44,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     let mut threads = None;
     let mut attenuation = 100.0f32;
     let mut speech_only = false;
+    let mut sensitivity = 3u8;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
@@ -47,6 +52,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
             "--threads" => threads = Some(value(&mut args, "--threads")?),
             "--attenuation" => attenuation = value(&mut args, "--attenuation")?,
             "--speech-only" => speech_only = true,
+            "--voice-sensitivity" => sensitivity = value(&mut args, "--voice-sensitivity")?,
             _ => return Err(format!("unknown argument {arg:?}")),
         }
     }
@@ -60,11 +66,14 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Options>, Stri
     if !(0.0..=100.0).contains(&attenuation) {
         return Err("--attenuation must be 0-100 dB".into());
     }
+    if !(1..=5).contains(&sensitivity) {
+        return Err("--voice-sensitivity must be 1-5".into());
+    }
     Ok(Some(Options {
         channels,
         threads,
         attenuation,
-        speech_only,
+        speech_only: speech_only.then_some(sensitivity),
     }))
 }
 

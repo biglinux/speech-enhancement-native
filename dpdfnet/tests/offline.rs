@@ -38,7 +38,7 @@ fn ladspa_chain(x: &[f32]) -> Vec<f32> {
 }
 fn enhance(input: &[u8], channels: usize, threads: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    offline::enhance(&load(), input, &mut out, channels, threads, 48.0, false)?;
+    offline::enhance(&load(), input, &mut out, channels, threads, 48.0, None)?;
     Ok(out)
 }
 fn speech() -> Vec<f32> {
@@ -91,7 +91,7 @@ fn speech_only_filters_the_enhanced_output() {
         .iter()
         .map(|raw| {
             let clean = ladspa_chain(raw);
-            let mut filter = firered_vad::SpeechOnly::new();
+            let mut filter = firered_vad::SpeechOnly::with_sensitivity(4);
             let mut out = Vec::new();
             filter.push(raw, &clean, &mut out);
             filter.finish(&mut out);
@@ -105,7 +105,7 @@ fn speech_only_filters_the_enhanced_output() {
     let input = bytes(&interleave(&channels));
     for threads in [1, 6] {
         let mut out = Vec::new();
-        offline::enhance(&load(), &input[..], &mut out, 2, threads, 48.0, true).unwrap();
+        offline::enhance(&load(), &input[..], &mut out, 2, threads, 48.0, Some(4)).unwrap();
         assert_eq!(out, expected, "{threads} threads");
     }
 }

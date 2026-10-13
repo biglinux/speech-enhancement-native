@@ -248,12 +248,11 @@ fn conv(
     }
 }
 
-/// Probabilities at which the gate opens and, after `HOLD_CHUNKS`, closes. FireRedVAD
-/// is surer of itself: below 0.9 it lets steady room noise through.
-const OPEN_AT: f32 = 0.2;
-const CLOSE_BELOW: f32 = 0.1;
-const FIRERED_OPEN_AT: f32 = 0.9;
-const FIRERED_CLOSE_BELOW: f32 = 0.45;
+/// Probability at which the gate opens, per sensitivity level from 1, the most
+/// sensitive, to 5; it closes after `HOLD_CHUNKS` below half of it. FireRedVAD is surer
+/// of itself: at 0.9 it keeps steady room noise out, which lower levels let through.
+const OPEN_AT: [f32; 5] = [0.05, 0.10, 0.20, 0.30, 0.50];
+const FIRERED_OPEN_AT: [f32; 5] = [0.50, 0.65, 0.80, 0.90, 0.95];
 /// 320 ms in a row below the closing probability closes, bridging the pauses between
 /// words.
 const HOLD_CHUNKS: u32 = 10;
@@ -386,19 +385,17 @@ impl Listener {
     }
 }
 
-/// Opens at `open_at`; closes after `HOLD_CHUNKS` chunks in a row below `close_below`.
+/// Opens at `open_at`; closes after `HOLD_CHUNKS` chunks in a row below half of it.
 struct Hysteresis {
     open_at: f32,
-    close_below: f32,
     is_open: bool,
     quiet: u32,
 }
 
 impl Hysteresis {
-    const fn new(open_at: f32, close_below: f32) -> Self {
+    const fn new(open_at: f32) -> Self {
         Self {
             open_at,
-            close_below,
             is_open: false,
             quiet: 0,
         }
@@ -408,7 +405,7 @@ impl Hysteresis {
         if probability >= self.open_at {
             self.is_open = true;
             self.quiet = 0;
-        } else if probability >= self.close_below {
+        } else if probability >= self.open_at / 2.0 {
             self.quiet = 0;
         } else if self.is_open {
             self.quiet = self.quiet.saturating_add(1);
@@ -426,13 +423,15 @@ impl Hysteresis {
 /// stands for input sample `t`. Decision `k` covers 48 kHz input
 /// `k * CHUNK_48K .. (k + 1) * CHUNK_48K`; the output for `t` opens if the chunk holding
 /// `t`, or any up to the first that ends 32 ms past it, heard speech: a word starting
-/// late in a chunk leaves that chunk below `OPEN_AT`, and hearing ahead keeps its
-/// onset. An output that lags the input by less than `LAG` falls back to the newest
-/// decision, and so does one whose decisions have left the last `HISTORY`: feed the
-/// input at most a few chunks ahead of the output.
+/// late in a chunk leaves that chunk below the opening probability, and hearing ahead
+/// keeps its onset. An output that lags the input by less than `LAG` falls back to the
+/// newest decision, and so does one whose decisions have left the last `HISTORY`: feed
+/// the input at most a few chunks ahead of the output.
 pub struct VoiceGate {
     listener: Listener,
     hysteresis: Hysteresis,
+    /// Index of the sensitivity level into `OPEN_AT` and `FIRERED_OPEN_AT`.
+    sensitivity: usize,
     decided: u64,
     open: [bool; HISTORY],
     gain: f32,
@@ -442,12 +441,14 @@ pub struct VoiceGate {
 }
 
 impl VoiceGate {
-    /// `depth_db` of 60 or more mutes completely.
+    /// `depth_db` of 60 or more mutes completely. Hears with Silero at sensitivity
+    /// level 3, the normal one.
     #[must_use]
     pub fn new(depth_db: f32, max_block: usize) -> Self {
         let mut gate = Self {
             listener: Listener::new(max_block, GATE_RESTART_CHUNKS),
-            hysteresis: Hysteresis::new(OPEN_AT, CLOSE_BELOW),
+            hysteresis: Hysteresis::new(OPEN_AT[2]),
+            sensitivity: 2,
             decided: 0,
             open: [false; HISTORY],
             gain: 0.0,
@@ -463,12 +464,28 @@ impl VoiceGate {
     /// first `feed`: switching later starts the new model mid-stream.
     pub fn use_firered(&mut self, firered: bool) {
         self.listener.use_firered = firered;
-        let (open_at, close_below) = if firered {
-            (FIRERED_OPEN_AT, FIRERED_CLOSE_BELOW)
+        self.hysteresis = Hysteresis::new(self.open_at());
+    }
+
+    /// Sets the sensitivity `level`, from 1, which opens on the faintest voice, to 5,
+    /// which opens only on a clear one. Takes effect at the next chunk without
+    /// closing an open gate, so it can follow a live control.
+    ///
+    /// # Panics
+    ///
+    /// If `level` is not 1 to 5.
+    pub fn set_sensitivity(&mut self, level: u8) {
+        assert!((1..=5).contains(&level), "sensitivity must be 1 to 5");
+        self.sensitivity = usize::from(level - 1);
+        self.hysteresis.open_at = self.open_at();
+    }
+
+    fn open_at(&self) -> f32 {
+        if self.listener.use_firered {
+            FIRERED_OPEN_AT[self.sensitivity]
         } else {
-            (OPEN_AT, CLOSE_BELOW)
-        };
-        self.hysteresis = Hysteresis::new(open_at, close_below);
+            OPEN_AT[self.sensitivity]
+        }
     }
 
     pub fn set_depth(&mut self, depth_db: f32) {
@@ -592,15 +609,35 @@ mod tests {
 
     #[test]
     fn gate_closes_after_quiet_hold() {
-        let mut gate = Hysteresis::new(OPEN_AT, CLOSE_BELOW);
+        let mut gate = Hysteresis::new(0.2);
         assert!(gate.step(0.9));
         assert!((0..HOLD_CHUNKS - 1).all(|_| gate.step(0.0)));
         // A chunk between the thresholds keeps the state and restarts the hold.
         assert!(gate.step(0.15));
         assert!((0..HOLD_CHUNKS - 1).all(|_| gate.step(0.0)));
         assert!(!gate.step(0.0));
-        // Closed, it stays closed between the thresholds and opens at OPEN_AT.
+        // Closed, it stays closed between the thresholds and opens at 0.2.
         assert!(!gate.step(0.15));
         assert!(gate.step(0.2));
+    }
+
+    #[test]
+    fn sensitivity_follows_detector_choice() {
+        let mut gate = VoiceGate::new(40.0, 0);
+        gate.set_sensitivity(5);
+        assert_eq!(gate.hysteresis.open_at, 0.5);
+        gate.use_firered(true);
+        assert_eq!(gate.hysteresis.open_at, 0.95);
+        gate.set_sensitivity(1);
+        assert_eq!(gate.hysteresis.open_at, 0.5);
+    }
+
+    #[test]
+    fn sensitivity_change_keeps_gate_open() {
+        let mut gate = VoiceGate::new(40.0, 0);
+        assert!(gate.hysteresis.step(0.25));
+        gate.set_sensitivity(5);
+        // Between level 5's thresholds an open gate stays open.
+        assert!(gate.hysteresis.step(0.3));
     }
 }

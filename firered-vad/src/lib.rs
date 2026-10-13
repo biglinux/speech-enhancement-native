@@ -464,9 +464,17 @@ impl StreamVad {
     }
 }
 
-/// A frame is voice from this smoothed probability, until `HOLD_FRAMES` in a row stay
-/// below `VOICE_CLOSE_BELOW`.
-const VOICE_OPEN_AT: f32 = 0.5;
+/// Per sensitivity level from 1, the most sensitive, to 5: the smoothed probability
+/// from which speech opens a voice, and the one from which singing alone does.
+/// Guitars and synths reach 0.7 as singing, sung phrases 0.94 and more. A voice stays
+/// open until `HOLD_FRAMES` in a row stay below `VOICE_CLOSE_BELOW`.
+const OPEN_AT: [(f32, f32); 5] = [
+    (0.10, 0.75),
+    (0.20, 0.80),
+    (0.25, 0.85),
+    (0.40, 0.90),
+    (0.60, 0.95),
+];
 const VOICE_CLOSE_BELOW: f32 = 0.25;
 const HOLD_FRAMES: u32 = 32;
 /// The denoised audio's speech counts only while the raw input sounds less like music
@@ -478,6 +486,9 @@ const SMOOTHING: usize = 5;
 /// a word's onset is heard late, and its fading tail not at all.
 const KEEP_BEFORE: i64 = 48_000;
 const KEEP_AFTER: i64 = 24_000;
+/// Frames a late singing opening reaches back for its rise, and so the most output
+/// held back while a rise has not opened yet.
+const RISE_REACH: i64 = 200;
 /// 48 kHz input samples per frame shift.
 const SHIFT_48K: i64 = 3 * FRAME_SHIFT as i64;
 
@@ -516,22 +527,28 @@ impl Ear {
 /// The AED hears the raw input, where it tells voices from instruments, and the
 /// denoised audio, where it hears the speech that noise buries in the raw input. A
 /// frame's probability is the larger of the raw input's speech or singing and, unless
-/// the raw input sounds like music, the denoised audio's speech. Output trails the
-/// input by the AED's delay, the smoothing and `KEEP_BEFORE`; `finish` returns the
-/// rest, the same number of samples in all.
+/// the raw input sounds like music, the denoised audio's speech. The sensitivity level
+/// sets the probability that opens a voice, higher for singing alone (`OPEN_AT`).
+/// Output trails the input by the AED's delay, the smoothing and `KEEP_BEFORE`;
+/// `finish` returns the rest, the same number of samples in all.
 pub struct SpeechOnly {
+    speech_open: f32,
+    singing_open: f32,
     raw: Ear,
     clean: Ear,
     raw_heard: VecDeque<[f32; 3]>,
     clean_heard: VecDeque<f32>,
-    /// Per frame from `first` on that a decision still needs: the raw input's voice
-    /// and music and the denoised audio's speech.
-    frames: VecDeque<[f32; 3]>,
+    /// Per frame from `first` on that a decision still needs: the raw input's speech,
+    /// singing and music and the denoised audio's speech.
+    frames: VecDeque<[f32; 4]>,
     first: i64,
     /// Frames decided; frame `f` starts at 48 kHz input `f * SHIFT_48K - LPF_DELAY`.
     decided: i64,
     is_open: bool,
     quiet: u32,
+    /// The first frame of the current run at or over `speech_open`: singing that
+    /// opens later keeps `KEEP_BEFORE` before this frame, as speech would.
+    rising: Option<i64>,
     /// Merged, ordered sample spans to keep.
     kept: VecDeque<(i64, i64)>,
     held: VecDeque<f32>,
@@ -545,9 +562,25 @@ impl Default for SpeechOnly {
 }
 
 impl SpeechOnly {
+    /// At sensitivity level 3, the normal one.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_sensitivity(3)
+    }
+
+    /// At sensitivity `level`, from 1, which opens on the faintest voice, to 5, which
+    /// opens only on a clear one.
+    ///
+    /// # Panics
+    ///
+    /// If `level` is not 1 to 5.
+    #[must_use]
+    pub fn with_sensitivity(level: u8) -> Self {
+        assert!((1..=5).contains(&level), "sensitivity must be 1 to 5");
+        let (speech_open, singing_open) = OPEN_AT[usize::from(level - 1)];
         Self {
+            speech_open,
+            singing_open,
             raw: Ear::new(),
             clean: Ear::new(),
             raw_heard: VecDeque::new(),
@@ -557,6 +590,7 @@ impl SpeechOnly {
             decided: 0,
             is_open: false,
             quiet: 0,
+            rising: None,
             kept: VecDeque::new(),
             held: VecDeque::new(),
             emitted: 0,
@@ -581,8 +615,12 @@ impl SpeechOnly {
         self.clean.hear(clean, |p| clean_heard.push_back(p[0]));
         self.pair();
         self.decide(false);
-        // An undecided frame cannot reach back past this sample.
-        let known = self.decided * SHIFT_48K - LPF_DELAY as i64 - KEEP_BEFORE;
+        // An undecided frame, or a rise that may still open, cannot reach back past
+        // this sample.
+        let back = self
+            .rising
+            .map_or(self.decided, |r| r.max(self.decided - RISE_REACH));
+        let known = back * SHIFT_48K - LPF_DELAY as i64 - KEEP_BEFORE;
         self.emit(known, out);
     }
 
@@ -599,7 +637,7 @@ impl SpeechOnly {
     /// Joins the frames both ears have answered.
     fn pair(&mut self) {
         while let (Some(raw), Some(&clean)) = (self.raw_heard.front(), self.clean_heard.front()) {
-            self.frames.push_back([raw[0].max(raw[1]), raw[2], clean]);
+            self.frames.push_back([raw[0], raw[1], raw[2], clean]);
             self.raw_heard.pop_front();
             self.clean_heard.pop_front();
         }
@@ -612,20 +650,26 @@ impl SpeechOnly {
         let answered = self.first + self.frames.len() as i64;
         while self.decided < answered && (ending || self.decided + half < answered) {
             let f = self.decided;
-            let mut mean = [0.0f32; 3];
+            let mut mean = [0.0f32; 4];
             for j in (f - half..=f + half).filter(|&j| j >= self.first && j < answered) {
                 let frame = self.frames[(j - self.first) as usize];
                 for (m, v) in mean.iter_mut().zip(frame) {
                     *m += v / SMOOTHING as f32;
                 }
             }
-            let [voice, music, clean_speech] = mean;
-            let p = if music < MUSIC_BELOW {
-                voice.max(clean_speech)
+            let [speech, singing, music, clean_speech] = mean;
+            let clean_speech = if music < MUSIC_BELOW {
+                clean_speech
             } else {
-                voice
+                0.0
             };
-            if p >= VOICE_OPEN_AT {
+            let p = speech.max(singing).max(clean_speech);
+            if p >= self.speech_open {
+                self.rising.get_or_insert(f);
+            } else {
+                self.rising = None;
+            }
+            if speech.max(clean_speech) >= self.speech_open || singing >= self.singing_open {
                 self.is_open = true;
                 self.quiet = 0;
             } else if p >= VOICE_CLOSE_BELOW {
@@ -637,8 +681,9 @@ impl SpeechOnly {
                 }
             }
             if self.is_open {
-                let start = f * SHIFT_48K - LPF_DELAY as i64 - KEEP_BEFORE;
-                let end = start + KEEP_BEFORE + SHIFT_48K + KEEP_AFTER;
+                let from = self.rising.map_or(f, |r| r.max(f - RISE_REACH));
+                let start = from * SHIFT_48K - LPF_DELAY as i64 - KEEP_BEFORE;
+                let end = f * SHIFT_48K - LPF_DELAY as i64 + SHIFT_48K + KEEP_AFTER;
                 match self.kept.back_mut() {
                     Some(last) if start <= last.1 => last.1 = last.1.max(end),
                     _ => self.kept.push_back((start, end)),
@@ -671,5 +716,44 @@ impl SpeechOnly {
             out.extend(self.held.drain(..n).map(|x| if keep { x } else { 0.0 }));
             self.emitted = next;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The spans `SpeechOnly` at sensitivity `level` keeps for raw AED answers
+    /// `[speech, singing, music]` per frame, the denoised audio hearing nothing.
+    fn kept(level: u8, frames: &[[f32; 3]]) -> Vec<(i64, i64)> {
+        let mut filter = SpeechOnly::with_sensitivity(level);
+        filter.raw_heard.extend(frames);
+        filter.clean_heard.extend(frames.iter().map(|_| 0.0));
+        filter.pair();
+        filter.decide(true);
+        filter.kept.into_iter().collect()
+    }
+
+    #[test]
+    fn instrument_heard_as_singing_stays_silent() {
+        assert!(kept(3, &[[0.0, 0.7, 1.0]; 300]).is_empty());
+    }
+
+    #[test]
+    fn sung_phrase_keeps_its_rise() {
+        let mut frames = vec![[0.0, 0.0, 1.0]; 300];
+        frames[150..200].fill([0.0, 0.6, 1.0]);
+        frames[200..260].fill([0.0, 0.95, 1.0]);
+        let spans = kept(3, &frames);
+        // The five-frame average reaches 0.25 on the rise's first frame.
+        let rise = 150 * SHIFT_48K - LPF_DELAY as i64 - KEEP_BEFORE;
+        assert_eq!(spans.first().map(|span| span.0), Some(rise));
+    }
+
+    #[test]
+    fn sensitivity_sets_speech_opening() {
+        let faint = [[0.3, 0.0, 0.0]; 100];
+        assert!(!kept(2, &faint).is_empty());
+        assert!(kept(4, &faint).is_empty());
     }
 }

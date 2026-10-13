@@ -75,6 +75,7 @@ the same ports; new ports are only appended, so existing indices stay valid.
 | Voice gate depth (dB) | 40 | Attenuation while the detector hears no speech ([voice gate](#voice-gate)); 0 is off, 60 or more mutes. On, it raises the latency of either engine to 66 ms. Read when the plugin starts running; switching it on or off takes effect at the next activation. |
 | latency (output) | | The current input-to-output delay in samples: 1919 or 959 without the voice gate, 3168 with it. |
 | Voice detector (0 Silero, 1 FireRedVAD) | 0 | The voice gate's detector. Read when the plugin starts running, like the gate. |
+| Voice sensitivity (1 sensitive, 3 normal, 5 strict) | 3 | The speech probability that opens the voice gate ([voice gate](#voice-gate)): 1 opens on the faintest voice and lets more noise through, 5 only on a clear voice. Follows live changes. |
 
 The two skip thresholds default to 40 dB, the top of their range, so no stage
 is skipped: at 30 and 20 dB the SI-SDR improvement on noisy speech fell from 11
@@ -92,12 +93,19 @@ f32 port of the 16 kHz model) unless the Voice detector control chooses
 FireRedVAD's streaming model ([FireRedVAD](firered-vad.md)); the rest of the gate
 is the same for both, and so is the latency.
 
-- Opens at a speech probability of 0.2 and closes after 320 ms in a row below
-  0.1 (FireRedVAD: 0.9 and 0.45; below 0.9 it lets steady room noise through);
-  attack 10 ms, release 150 ms. A FireRedVAD chunk takes its most confident
-  10 ms frame. A decision covers 32 ms of input, and each sample is
-  gated by the decision about its own chunk and the chunks up to 32 ms after
-  it, so word onsets are kept.
+- Opens at the speech probability the Voice sensitivity control sets and
+  closes after 320 ms in a row below half of it; attack 10 ms, release 150 ms.
+  FireRedVAD is surer of itself: at 0.9 it keeps steady room noise out, which
+  lower levels let through.
+
+  | Sensitivity | 1 | 2 | 3 | 4 | 5 |
+  |---|---:|---:|---:|---:|---:|
+  | Silero opens at | 0.05 | 0.10 | 0.20 | 0.30 | 0.50 |
+  | FireRedVAD opens at | 0.50 | 0.65 | 0.80 | 0.90 | 0.95 |
+
+- A FireRedVAD chunk takes its most confident 10 ms frame. A decision covers
+  32 ms of input, and each sample is gated by the decision about its own chunk
+  and the chunks up to 32 ms after it, so word onsets are kept.
 - The output is delayed until those decisions exist, so with the gate on both
   engines have the same latency:
 
@@ -148,8 +156,8 @@ under loud music, which Silero does not hear in the raw input; listening
 to the denoised output as well would need about 42 ms more latency and let
 dozens of room-noise bursts through on the recording above.
 
-With FireRedVAD as the detector the gate trades the other way. On the film it
-keeps 94% of the dialogue (DeepFilterNet3-LL: 95%) and lets 18 s through (23 s).
+With FireRedVAD as the detector, measured at sensitivity 4 (0.9), the gate
+trades the other way. On the film it keeps 94% of the dialogue (DeepFilterNet3-LL: 95%) and lets 18 s through (23 s).
 On the room-noise recording above it lets 6 bursts through, the loudest at
 -21.7 dBFS (5, at -19.6 dBFS), and on sixteen microphone recordings of speech it
 attenuates 0.66% of speech frames by more than 6 dB, against 0.36% with Silero
@@ -158,7 +166,7 @@ attenuates 0.66% of speech frames by more than 6 dB, against 0.36% with Silero
 | DeepFilterNet3, detector | Room-noise bursts | Speech frames cut | Film dialogue kept |
 |---|---:|---:|---:|
 | Silero | 3 | 0.36% | 83% |
-| FireRedVAD | 6 | 0.66% | 94% |
+| FireRedVAD, sensitivity 4 | 6 | 0.66% | 94% |
 
 DPDFNet has no voice gate: on the same recording its residual is a constant
 floor near -70 dBFS with rare bursts (loudest -16.5 dBFS), which listens as
