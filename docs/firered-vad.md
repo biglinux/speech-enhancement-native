@@ -6,7 +6,7 @@ models, rebuilt from the release's checkpoints by `tools/export_weights.py`.
 | Model | Outputs | Lookahead | Used by |
 |---|---|---|---|
 | AED | speech, singing, music | 1.6 s | `dpdfnet-enhance --speech-only`, through `SpeechOnly` ([how](dpdfnet.md#whole-recordings)) |
-| Stream-VAD | speech | none | the DeepFilterNet3 voice gate, when chosen ([how](deepfilternet3.md#voice-gate)) |
+| Stream-VAD | speech | none | the voice gate of the DeepFilterNet3 and DPDFNet plugins, when chosen ([how](deepfilternet3.md#voice-gate)) |
 
 ## Features and network
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Native Silero VAD and the voice gate the DeepFilterNet3 plugins apply after denoising"
+description = "Native Silero VAD and the voice gate the denoiser plugins apply after denoising"
 publish.workspace = true
 
 [dependencies]

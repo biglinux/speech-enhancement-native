@@ -22,7 +22,8 @@ tier.
 | | The same model over whole files, on several threads ([how](docs/dpdfnet.md#whole-recordings)) | `/usr/bin/dpdfnet-enhance` | |
 | `gtcrn-aec-native` | GTCRN-AEC echo cancellation | `/usr/lib/spa-0.2/aec/libspa-aec-gtcrn.so` | `library.name = aec/libspa-aec-gtcrn` |
 
-All plugins take 48 kHz mono and accept any host block size. The DeepFilterNet3
+All plugins take mono at 48 kHz (the limiter at any rate) and accept any host
+block size. The DeepFilterNet3
 and DPDFNet plugins include a voice gate that mutes the output while nobody
 speaks, with Silero or, by choice, FireRedVAD as its detector, at one of five
 sensitivity levels. It raises the latency of every engine to 66 ms, from 40 ms
@@ -44,7 +45,8 @@ CPU seconds per minute of audio, one core, measured with `perf stat`
 | DeepFilterNet3-LL | 2.1 | 15.2 |
 | DPDFNet-2 48 kHz HR | 3.9 | 27.3 |
 | GTCRN-AEC (16 kHz core) | 1.2 | 7.2 |
-| Voice gate, added to any engine | 0.21 | not measured |
+| Voice gate with Silero, added to any engine | 0.33 | not measured |
+| Voice gate with FireRedVAD, added to any engine | 0.55 | not measured |
 
 ## Build
 

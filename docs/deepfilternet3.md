@@ -168,9 +168,9 @@ attenuates 0.66% of speech frames by more than 6 dB, against 0.36% with Silero
 | Silero | 3 | 0.36% | 83% |
 | FireRedVAD, sensitivity 4 | 6 | 0.66% | 94% |
 
-DPDFNet has no voice gate: on the same recording its residual is a constant
-floor near -70 dBFS with rare bursts (loudest -16.5 dBFS), which listens as
-clean.
+DPDFNet's voice gate is off by default ([DPDFNet](dpdfnet.md#voice-gate)): on
+the same recording, without the gate, its residual is a constant floor near
+-70 dBFS with rare bursts (loudest -16.5 dBFS), which listens as clean.
 
 ## PipeWire example
 
