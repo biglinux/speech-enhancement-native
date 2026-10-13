@@ -22,12 +22,14 @@ tier.
 | | The same model over whole files, on several threads ([how](docs/dpdfnet.md#whole-recordings)) | `/usr/bin/dpdfnet-enhance` | |
 | `gtcrn-aec-native` | GTCRN-AEC echo cancellation | `/usr/lib/spa-0.2/aec/libspa-aec-gtcrn.so` | `library.name = aec/libspa-aec-gtcrn` |
 
-All plugins take 48 kHz mono and accept any host block size. Both DeepFilterNet3
-plugins include a voice gate that mutes the output while nobody speaks, with
-Silero or, by choice, FireRedVAD as its detector, at one of five sensitivity
-levels. It is on by default and raises
-the latency of both engines to 66 ms, from 40 ms for DeepFilterNet3 and 20 ms for
-DeepFilterNet3-LL ([details](docs/deepfilternet3.md#voice-gate)).
+All plugins take 48 kHz mono and accept any host block size. The DeepFilterNet3
+and DPDFNet plugins include a voice gate that mutes the output while nobody
+speaks, with Silero or, by choice, FireRedVAD as its detector, at one of five
+sensitivity levels. It raises the latency of every engine to 66 ms, from 40 ms
+for DeepFilterNet3, 20 ms for DeepFilterNet3-LL and 60 ms for DPDFNet
+([details](docs/deepfilternet3.md#voice-gate)). It is on by default in the
+DeepFilterNet3 plugins and off in DPDFNet, where it costs nothing until a host
+turns it on ([controls](docs/dpdfnet.md#voice-gate)).
 Each LADSPA plugin reports its current delay, in samples, on an output control
 port named `latency`, which PipeWire's filter-chain adds to the node latency.
 
@@ -42,7 +44,7 @@ CPU seconds per minute of audio, one core, measured with `perf stat`
 | DeepFilterNet3-LL | 2.1 | 15.2 |
 | DPDFNet-2 48 kHz HR | 3.9 | 27.3 |
 | GTCRN-AEC (16 kHz core) | 1.2 | 7.2 |
-| Voice gate, added to either DeepFilterNet3 engine | 0.21 | not measured |
+| Voice gate, added to any engine | 0.21 | not measured |
 
 ## Build
 
@@ -66,7 +68,7 @@ The tests use the models in the repository.
 ops/              int8/SIMD kernels and resampler shared by all engines
 deepfilternet3/   DeepFilterNet3 and -LL engines, their shared LADSPA plugin crate,
                   CLIs and benchmark, weight quantizer
-silero-vad/       Silero VAD and the voice gate of the DeepFilterNet3 plugins
+silero-vad/       Silero VAD and the voice gate of the denoiser plugins
 firered-vad/      FireRedVAD: the AED behind dpdfnet-enhance --speech-only and the
                   streaming model the voice gate can use instead of Silero
 limiter-ladspa/   peak limiter

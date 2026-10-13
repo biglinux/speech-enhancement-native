@@ -98,6 +98,7 @@ dependencies = [
  "realfft",
  "serde_json",
  "sha2",
+ "silero-vad",
 ]
 
 [[package]]

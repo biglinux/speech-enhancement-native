@@ -124,6 +124,19 @@ a non-finite result or a panic sets the `Processing fault` port and outputs
 silence until reset; the plugin never falls back to raw audio, and no panic
 unwinds into the host.
 
+## Voice gate
+
+The plugin carries the voice gate of the DeepFilterNet3 plugins
+([how it decides](deepfilternet3.md#voice-gate)), off by default. Off, the
+detector never runs and the latency stays 2880 samples. These controls follow
+the `Processing fault` port, in this order:
+
+| Control | Default | Meaning |
+|---|---|---|
+| Voice gate depth (dB) | 0 | Attenuation while the detector hears no speech; 0 is off, 60 or more mutes. On, the latency is 3168 samples (66 ms). Read when the plugin starts running; switching it on or off takes effect at the next activation. |
+| Voice detector (0 Silero, 1 FireRedVAD) | 0 | The gate's detector, read when the plugin starts running. |
+| Voice sensitivity (1 sensitive, 3 normal, 5 strict) | 3 | The speech probability that opens the gate. Follows live changes. |
+
 ## Memory and threads
 
 One aligned allocation holds the weights; tensors are `Arc` views into it. The
