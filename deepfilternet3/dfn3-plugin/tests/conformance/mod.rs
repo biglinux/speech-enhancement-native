@@ -23,6 +23,7 @@ const POST_FILTER: c_ulong = 7;
 const STARTUP_MS: c_ulong = 8;
 const VOICE_GATE: c_ulong = 19;
 const LATENCY: c_ulong = 20;
+const VOICE_DETECTOR: c_ulong = 21;
 const VOICE_SENSITIVITY: c_ulong = 22;
 const GATE_ON: (c_ulong, f32) = (VOICE_GATE, 40.0);
 const GATE_OFF: (c_ulong, f32) = (VOICE_GATE, 0.0);
@@ -534,11 +535,12 @@ fn golden_output_matches_reference() {
 fn run_never_allocates() {
     let input = noisy_speech();
     for block in [1usize, 480, 1024, 16384] {
-        for gate in [GATE_OFF, GATE_ON] {
+        for (gate, detector) in [(GATE_OFF, 0.0), (GATE_ON, 0.0), (GATE_ON, 1.0)] {
             let run = Run::new(&[
                 gate,
                 (DEPTH, 20.0),
                 (LATENCY, 0.0),
+                (VOICE_DETECTOR, detector),
                 (VOICE_SENSITIVITY, 5.0),
             ]);
             run.activate();
@@ -555,7 +557,11 @@ fn run_never_allocates() {
                 // SAFETY: as above, and `piece` is at most `block` long.
                 calls += heap_calls(|| unsafe { plugin_run(run.h, piece.len() as c_ulong) });
             }
-            assert_eq!(calls, 0, "block {block}, gate {}", gate.1);
+            assert_eq!(
+                calls, 0,
+                "block {block}, gate {}, detector {detector}",
+                gate.1
+            );
         }
     }
 }

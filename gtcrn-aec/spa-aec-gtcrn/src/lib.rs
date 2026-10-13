@@ -795,6 +795,20 @@ mod abi_contract_tests {
     }
 
     #[test]
+    fn hostile_samples_keep_output_finite() {
+        let (mut mic, mut far) = echo_and_near_end(2 * 48_000);
+        for (i, v) in [f32::NAN, f32::INFINITY, f32::MAX, -f32::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            mic[10_000 * (i + 1)..][..700].fill(v);
+            far[10_000 * (i + 1) + 5_000..][..700].fill(v);
+        }
+        let out = run_through_abi(&mic, &far, 480, false);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
     fn init_reports_unusable_model_reason() {
         assert_eq!(init_with_model("/nonexistent/model.gguf"), -2); // ENOENT
         assert_eq!(init_with_model(env!("CARGO_MANIFEST_PATH")), -EINVAL);

@@ -15,6 +15,9 @@ pub use model::HOP;
 pub use weights::{Bundle, Error, Result};
 
 #[cfg(test)]
+#[path = "../../testdata/heap_calls.rs"]
+mod heap_calls;
+#[cfg(test)]
 mod test_support;
 
 /// Runs the body of an `extern "C"` entry: a panic must not unwind into the host.

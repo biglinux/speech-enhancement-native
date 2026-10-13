@@ -1,5 +1,5 @@
-//! The gate runs inside the plugins' real-time `run()`: after warm-up, feeding input
-//! and asking for gains must not touch the heap, at any host block size.
+//! The gate runs inside the plugins' real-time `run()`: feeding input, choosing the
+//! detector and setting the controls must not touch the heap, at any host block size.
 #[path = "../../testdata/heap_calls.rs"]
 mod heap_calls;
 
@@ -13,24 +13,24 @@ fn tone(n: usize) -> Vec<f32> {
 }
 
 #[test]
-fn warm_gate_never_allocates() {
+fn gate_never_allocates() {
     for (block, firered) in [1usize, 128, 480, 1024, 4096]
         .into_iter()
         .flat_map(|b| [(b, false), (b, true)])
     {
-        let mut gate = VoiceGate::new(40.0, 4096);
-        gate.use_firered(firered);
+        let mut gate = VoiceGate::new(0.0, 4096);
         let input = tone(CHUNK_48K * 12);
         let mut t = 0i64;
-        // Warm-up: first decision, weights shared, buffers at their working size.
-        for piece in input[..CHUNK_48K * 2].chunks(block) {
-            gate.feed(piece);
-        }
+        // From construction on, as the plugins drive it: detector, depth and
+        // sensitivity chosen on the audio thread, the level following its control.
         let calls = heap_calls(|| {
-            for piece in input[CHUNK_48K * 2..].chunks(block) {
+            gate.use_firered(firered);
+            gate.set_depth(40.0);
+            for (k, piece) in input.chunks(block).enumerate() {
+                gate.set_sensitivity(1 + (k % 5) as u8);
                 gate.feed(piece);
                 for _ in piece {
-                    gate.gain(t);
+                    gate.gain(t - VoiceGate::LAG as i64);
                     t += 1;
                 }
             }

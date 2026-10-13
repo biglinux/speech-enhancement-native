@@ -482,6 +482,45 @@ mod tests {
     }
 
     #[test]
+    fn run_never_allocates() {
+        let input = noisy_speech()[96_000 - 24_000..96_000 + 24_000].to_vec();
+        for detector in [0.0f32, 1.0] {
+            let audio = AudioProcessor::new(bundle()).unwrap();
+            let h: *mut c_void = Box::into_raw(Box::new(Instance::new(audio))).cast();
+            let mut controls = [48.0f32, 40.0, detector, 1.0];
+            let ports = [ATTEN, VOICE_GATE, VOICE_DETECTOR, VOICE_SENSITIVITY];
+            let (mut latency, mut fault) = (0.0f32, 0.0f32);
+            let mut buf = input.clone();
+            // SAFETY: `h` is live until cleanup below, and every connected buffer
+            // outlives the runs; input and output share one buffer, as hosts may.
+            unsafe {
+                for (&port, value) in ports.iter().zip(&mut controls) {
+                    connect(h, port as c_ulong, value);
+                }
+                connect(h, LATENCY_PORT as c_ulong, &raw mut latency);
+                connect(h, 4, &raw mut fault);
+                activate(h);
+                let calls = crate::heap_calls::heap_calls(|| {
+                    let mut start = 0;
+                    for block in [1, 7, 480, 4096].into_iter().cycle() {
+                        let piece = &mut buf[start..(start + block).min(input.len())];
+                        connect(h, 0, piece.as_mut_ptr());
+                        connect(h, 1, piece.as_mut_ptr());
+                        run(h, piece.len() as c_ulong);
+                        start += piece.len();
+                        if start == input.len() {
+                            break;
+                        }
+                    }
+                });
+                assert_eq!(calls, 0, "detector {detector}");
+                assert_eq!(fault, 0.0);
+                cleanup(h);
+            }
+        }
+    }
+
+    #[test]
     fn sensitivity_sets_gate_opening() {
         let input = noisy_speech()[..96_000].to_vec();
         let noise_at = |level: f32| {
