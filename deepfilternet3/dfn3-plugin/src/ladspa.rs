@@ -283,6 +283,69 @@ impl<N: Network> Instance<N> {
             .then(|| unsafe { *p })
             .filter(|v| v.is_finite())
     }
+
+    /// Applies the control ports for a run of `n` samples and writes the latency
+    /// port. Returns the expander depth and the silence-floor anchors.
+    fn read_controls(&mut self, n: usize) -> (f32, [f32; NUM_ANCHORS]) {
+        if let Some(db) = self.control(ATTEN)
+            && db != self.last_atten_db
+        {
+            self.eng.atten_lim = atten_lim_from_db(db);
+            self.last_atten_db = db;
+        }
+        if let Some(beta) = self.control(POST_FILTER) {
+            self.eng.post_filter_beta = beta.clamp(0.0, 1.0);
+        }
+        if let Some(v) = self.control(MIN_DB) {
+            self.eng.min_db = v;
+        }
+        if let Some(v) = self.control(MAX_DB_ERB) {
+            self.eng.max_db_erb = v;
+        }
+        if let Some(v) = self.control(MAX_DB_DF) {
+            self.eng.max_db_df = v;
+        }
+        if let Some(level) = self.control(VOICE_SENSITIVITY) {
+            self.gate
+                .set_sensitivity(level.round().clamp(1.0, 5.0) as u8);
+        }
+        let gate_db = self.control(VOICE_GATE).map_or(0.0, |v| v.max(0.0));
+        // Read once, so a live control change neither restarts the mute nor changes
+        // the delay the gate adds.
+        if self.first_run && n > 0 {
+            if let Some(ms) = self.control(STARTUP_MS) {
+                self.startup_samples =
+                    (ms.clamp(0.0, 1000.0) * SR as f32 / 1000.0).round() as usize;
+            }
+            self.gate_on = gate_db > 0.0;
+            self.gate
+                .use_firered(self.control(VOICE_DETECTOR).is_some_and(|v| v >= 0.5));
+            self.first_run = false;
+        }
+        let p = self.ports[LATENCY];
+        if !p.is_null() {
+            let gate_on = if self.first_run {
+                gate_db > 0.0
+            } else {
+                self.gate_on
+            };
+            let delay = if gate_on {
+                VoiceGate::LAG
+            } else {
+                Self::ENGINE_DELAY
+            };
+            // SAFETY: a connected port points at host control storage valid during run().
+            unsafe { *p = delay as f32 };
+        }
+        if self.gate_on && gate_db != self.last_gate_db {
+            self.gate.set_depth(gate_db);
+            self.last_gate_db = gate_db;
+        }
+        // The attenuation limit caps the expander's depth; NaN while it is unset.
+        let depth = self.control(DEPTH).unwrap_or(0.0).min(self.last_atten_db);
+        let anchors = std::array::from_fn(|k| self.control(ANCHORS + k).unwrap_or(ANCHOR_SENTINEL));
+        (depth, anchors)
+    }
 }
 
 /// Whether the processed spectrum rises above the user's silence-floor curve this
@@ -373,64 +436,7 @@ unsafe extern "C" fn run<N: Network>(h: Handle, n: c_ulong) {
     }
     let _fp_env = DenormalGuard::new();
     let n = n as usize;
-
-    if let Some(db) = inst.control(ATTEN)
-        && db != inst.last_atten_db
-    {
-        inst.eng.atten_lim = atten_lim_from_db(db);
-        inst.last_atten_db = db;
-    }
-    if let Some(beta) = inst.control(POST_FILTER) {
-        inst.eng.post_filter_beta = beta.clamp(0.0, 1.0);
-    }
-    if let Some(v) = inst.control(MIN_DB) {
-        inst.eng.min_db = v;
-    }
-    if let Some(v) = inst.control(MAX_DB_ERB) {
-        inst.eng.max_db_erb = v;
-    }
-    if let Some(v) = inst.control(MAX_DB_DF) {
-        inst.eng.max_db_df = v;
-    }
-    if let Some(level) = inst.control(VOICE_SENSITIVITY) {
-        inst.gate
-            .set_sensitivity(level.round().clamp(1.0, 5.0) as u8);
-    }
-    let gate_db = inst.control(VOICE_GATE).map_or(0.0, |v| v.max(0.0));
-    // Read once, so a live control change neither restarts the mute nor changes
-    // the delay the gate adds.
-    if inst.first_run && n > 0 {
-        if let Some(ms) = inst.control(STARTUP_MS) {
-            inst.startup_samples = (ms.clamp(0.0, 1000.0) * SR as f32 / 1000.0).round() as usize;
-        }
-        inst.gate_on = gate_db > 0.0;
-        inst.gate
-            .use_firered(inst.control(VOICE_DETECTOR).is_some_and(|v| v >= 0.5));
-        inst.first_run = false;
-    }
-    let p = inst.ports[LATENCY];
-    if !p.is_null() {
-        let gate_on = if inst.first_run {
-            gate_db > 0.0
-        } else {
-            inst.gate_on
-        };
-        let delay = if gate_on {
-            VoiceGate::LAG
-        } else {
-            Instance::<N>::ENGINE_DELAY
-        };
-        // SAFETY: a connected port points at host control storage valid during run().
-        unsafe { *p = delay as f32 };
-    }
-    if inst.gate_on && gate_db != inst.last_gate_db {
-        inst.gate.set_depth(gate_db);
-        inst.last_gate_db = gate_db;
-    }
-    // The attenuation limit caps the expander's depth; NaN while it is unset.
-    let depth = inst.control(DEPTH).unwrap_or(0.0).min(inst.last_atten_db);
-    let anchors: [f32; NUM_ANCHORS] =
-        std::array::from_fn(|k| inst.control(ANCHORS + k).unwrap_or(ANCHOR_SENTINEL));
+    let (depth, anchors) = inst.read_controls(n);
 
     // In slices of at most a hop: the detector hears each slice before any of it
     // leaves, so every decision an output waits for exists, and it never runs so

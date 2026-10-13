@@ -338,45 +338,24 @@ impl<N: Network> Denoiser<N> {
             }
         }
 
-        let (apply_gains, apply_gain_zeros, apply_df) = if self.lsnr < self.min_db {
-            (false, true, false)
+        // Below `min_db` the hop is muted, above `max_db_erb` it passes unchanged,
+        // above `max_db_df` it gets the mask alone. A NaN LSNR runs every stage.
+        let (muted, apply_gains, has_coefs) = if self.lsnr < self.min_db {
+            (true, false, false)
         } else if self.lsnr > self.max_db_erb {
             (false, false, false)
         } else if self.lsnr > self.max_db_df {
-            (true, false, false)
+            (false, true, false)
         } else {
-            (true, false, true)
+            (false, true, true)
         };
-
-        let mut has_gains = false;
-        if apply_gains {
-            has_gains = true;
-        } else if apply_gain_zeros {
+        if muted {
             self.erb_mask.fill(0.0);
-            has_gains = true;
         }
-        let has_coefs = apply_df;
 
         let delayed = DF_ORDER - 1;
-        {
-            let phys = self.yphys(delayed);
-            if has_gains {
-                let (start_band, mut off) = if has_coefs {
-                    (ERB_DF_SKIP_BAND, ERB_DF_SKIP_OFFSET)
-                } else {
-                    (0usize, 0usize)
-                };
-                let buf = &mut self.roll_y[phys];
-                for b in start_band..NB_ERB {
-                    let g = self.erb_mask[b];
-                    let bw = ERB_WIDTHS[b];
-                    for i in 0..bw {
-                        buf[off + i] *= g;
-                        buf[FREQ + off + i] *= g;
-                    }
-                    off += bw;
-                }
-            }
+        if apply_gains || muted {
+            self.apply_erb_mask(delayed, has_coefs);
         }
 
         // Moved out and back so `self` stays borrowable; no allocation.
@@ -407,9 +386,37 @@ impl<N: Network> Denoiser<N> {
             }
         }
 
-        // The GUI's spectrum bars show the peak bin of each band; matching that
-        // keeps a floor curve drawn against them on the same scale.
-        let mut off = 0usize;
+        self.update_band_db(&enh_re, &enh_im);
+        self.frame_synthesis(out, &enh_re, &enh_im);
+        self.enh_re = enh_re;
+        self.enh_im = enh_im;
+    }
+
+    /// Scales the spectrum `delayed` hops old by the ERB mask; with the deep filter
+    /// on, only the bands above its bins.
+    fn apply_erb_mask(&mut self, delayed: usize, deep_filter: bool) {
+        let (start_band, mut off) = if deep_filter {
+            (ERB_DF_SKIP_BAND, ERB_DF_SKIP_OFFSET)
+        } else {
+            (0, 0)
+        };
+        let phys = self.yphys(delayed);
+        let buf = &mut self.roll_y[phys];
+        for b in start_band..NB_ERB {
+            let g = self.erb_mask[b];
+            let bw = ERB_WIDTHS[b];
+            for i in 0..bw {
+                buf[off + i] *= g;
+                buf[FREQ + off + i] *= g;
+            }
+            off += bw;
+        }
+    }
+
+    /// The GUI's spectrum bars show the peak bin of each band; matching that keeps a
+    /// floor curve drawn against them on the same scale.
+    fn update_band_db(&mut self, enh_re: &[f32], enh_im: &[f32]) {
+        let mut off = 0;
         for b in 0..NB_ERB {
             let width = ERB_WIDTHS[b];
             let mut peak = 0.0f32;
@@ -422,10 +429,6 @@ impl<N: Network> Denoiser<N> {
             self.band_db[b] = 10.0 * (peak + 1e-12).log10();
             off += width;
         }
-
-        self.frame_synthesis(out, &enh_re, &enh_im);
-        self.enh_re = enh_re;
-        self.enh_im = enh_im;
     }
 }
 
