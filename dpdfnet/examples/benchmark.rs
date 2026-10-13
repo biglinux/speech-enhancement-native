@@ -1,6 +1,6 @@
 //! Times the complete mono audio path under the plugin's FTZ/DAZ setting and
 //! fails on any heap use while processing.
-//! cargo run --profile release-unwind -p dpdfnet-native --example benchmark -- MODEL_DIRECTORY
+//! Run with `cargo run --profile release-unwind -p dpdfnet-native --example benchmark MODEL_DIRECTORY`.
 use dpdfnet_native::{AudioProcessor, Bundle, HOP};
 use std::{process::ExitCode, time::Instant};
 #[path = "../../testdata/heap_calls.rs"]
