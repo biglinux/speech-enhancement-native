@@ -251,7 +251,7 @@ fn conv(
 /// Probability at which the gate opens, per sensitivity level from 1, the most
 /// sensitive, to 5; it closes after `HOLD_CHUNKS` below half of it. FireRedVAD is surer
 /// of itself: at 0.9 it keeps steady room noise out, which lower levels let through.
-const OPEN_AT: [f32; 5] = [0.05, 0.10, 0.20, 0.30, 0.50];
+const OPEN_AT: [f32; 5] = [0.03, 0.05, 0.10, 0.20, 0.40];
 const FIRERED_OPEN_AT: [f32; 5] = [0.50, 0.65, 0.80, 0.90, 0.95];
 /// 320 ms in a row below the closing probability closes, bridging the pauses between
 /// words.
@@ -625,7 +625,7 @@ mod tests {
     fn sensitivity_follows_detector_choice() {
         let mut gate = VoiceGate::new(40.0, 0);
         gate.set_sensitivity(5);
-        assert_eq!(gate.hysteresis.open_at, 0.5);
+        assert_eq!(gate.hysteresis.open_at, 0.4);
         gate.use_firered(true);
         assert_eq!(gate.hysteresis.open_at, 0.95);
         gate.set_sensitivity(1);

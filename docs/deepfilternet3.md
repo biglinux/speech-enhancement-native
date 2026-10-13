@@ -100,7 +100,7 @@ is the same for both, and so is the latency.
 
   | Sensitivity | 1 | 2 | 3 | 4 | 5 |
   |---|---:|---:|---:|---:|---:|
-  | Silero opens at | 0.05 | 0.10 | 0.20 | 0.30 | 0.50 |
+  | Silero opens at | 0.03 | 0.05 | 0.10 | 0.20 | 0.40 |
   | FireRedVAD opens at | 0.50 | 0.65 | 0.80 | 0.90 | 0.95 |
 
 - A FireRedVAD chunk takes its most confident 10 ms frame. A decision covers
